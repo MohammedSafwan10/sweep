@@ -22,10 +22,11 @@ Run `sweep clean` for a dry-run plan, `sweep clean --execute` to act.
 ## Install
 
 ```sh
-cargo install sweep
+cargo install --git https://github.com/MohammedSafwan10/sweep
 ```
 
-Windows binary: see [Releases](https://github.com/MohammedSafwan10/sweep/releases).
+No Rust? Download `sweep.exe` from [Releases](https://github.com/MohammedSafwan10/sweep/releases)
+(v0.1.0 and newer) and run it in a terminal — no install needed.
 winget / scoop packages are on the roadmap.
 
 ## Usage
@@ -57,10 +58,11 @@ Details: [docs/SAFETY.md](docs/SAFETY.md) · detectors: [docs/DETECTORS.md](docs
 ## Roadmap
 
 - [x] M1 — parallel scanner + CLI (+ `--json`)
-- [x] M2 — 9-detector registry
+- [x] M2 — 16-detector registry (Rust, Dart, JS, Python, .NET, Gradle, Android, Docker…)
 - [x] M3 — safe cleaner (trash-first, receipts)
+- [x] M5 (part 1) — v0.1.0 released with Windows exe
 - [ ] M4 — interactive TUI (`ratatui`)
-- [ ] M5 — winget/scoop, signed Windows builds
+- [ ] M5 (part 2) — winget/scoop, signed Windows builds
 
 ## Contributing
 
