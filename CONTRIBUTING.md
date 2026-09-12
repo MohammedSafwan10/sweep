@@ -2,6 +2,8 @@
 
 ## Setup
 
+Rust 1.88 or newer is required by the locked dependency set. CI checks this minimum.
+
 ```sh
 git clone https://github.com/MohammedSafwan10/sweep
 cd sweep

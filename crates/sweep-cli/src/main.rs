@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use sweep_core::cleaner;
 use sweep_core::detectors::{self, Ctx};
 use sweep_core::model::{CleanOptions, Safety, ScanOptions};
-use sweep_core::scanner::{self, format_bytes, parse_size};
+use sweep_core::scanner::{self, display_path, format_bytes, parse_size};
 
 #[derive(Parser)]
 #[command(
@@ -173,10 +173,6 @@ fn run() -> Result<i32> {
                 force_danger: force,
             };
             if json {
-                // Single-shot for agents: explicit --yes required to act.
-                if execute && !yes {
-                    bail!("refusing --execute --json without --yes: agents must opt in explicitly");
-                }
                 let receipt = cleaner::clean(&findings, &opts);
                 println!("{}", serde_json::to_string_pretty(&receipt)?);
                 return Ok(if receipt.errors.is_empty() { 0 } else { 2 });
@@ -286,7 +282,7 @@ fn print_findings_human(findings: &[sweep_core::Finding]) {
     }
     let total: u64 = findings.iter().map(|f| f.bytes).sum();
     println!(
-        "Reclaimable: {} across {} items\n",
+        "Detected: {} logical bytes across {} items\n",
         format_bytes(total),
         findings.len()
     );
@@ -298,7 +294,7 @@ fn print_findings_human(findings: &[sweep_core::Finding]) {
             f.label
         );
         if let sweep_core::CleanAction::RemovePath { path } = &f.action {
-            println!("             {}", path.display());
+            println!("             {}", display_path(path).display());
         }
         println!(
             "             {} ({})",
@@ -322,11 +318,11 @@ fn print_receipt_human(receipt: &sweep_core::CleanReceipt, opts: &CleanOptions) 
     }
     if !receipt.removed.is_empty() {
         println!(
-            "{} {} ({}):",
+            "{} {} in logical file sizes ({}):",
             if receipt.dry_run {
-                "Would free"
+                "Would remove"
             } else {
-                "Freed"
+                "Removed"
             },
             format_bytes(receipt.freed_bytes),
             receipt.removed.len()
@@ -337,7 +333,7 @@ fn print_receipt_human(receipt: &sweep_core::CleanReceipt, opts: &CleanOptions) 
                 format_bytes(r.bytes),
                 r.via,
                 safety_tag(r.safety),
-                r.path.display()
+                display_path(&r.path).display()
             );
         }
     }

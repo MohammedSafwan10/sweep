@@ -16,6 +16,7 @@ use crate::model::{
     CleanAction, CleanOptions, CleanReceipt, Disposition, Finding, PlannedItem, RemovedItem,
     SkippedItem, SCHEMA_VERSION,
 };
+use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
 pub struct CleanPlan {
@@ -28,6 +29,11 @@ pub struct CleanPlan {
 pub fn plan(findings: &[Finding], opts: &CleanOptions) -> CleanPlan {
     let mut items = Vec::new();
     let mut total_bytes: u64 = 0;
+    let mut paths = HashSet::new();
+    let resolved: Vec<_> = findings
+        .iter()
+        .map(|finding| action_path(finding).and_then(|path| std::fs::canonicalize(path).ok()))
+        .collect();
     for finding in findings {
         if !opts.include.allows(finding.safety) {
             items.push(skip(finding, "filtered by --only level"));
@@ -40,6 +46,10 @@ pub fn plan(findings: &[Finding], opts: &CleanOptions) -> CleanPlan {
         match &finding.action {
             CleanAction::RemovePath { path } => {
                 if let Some(reason) = refusal_reason(path) {
+                    items.push(skip(finding, &reason));
+                    continue;
+                }
+                if let Err(reason) = validate_ancestors(path) {
                     items.push(skip(finding, &reason));
                     continue;
                 }
@@ -58,9 +68,39 @@ pub fn plan(findings: &[Finding], opts: &CleanOptions) -> CleanPlan {
                     }
                     Ok(_) => {}
                 }
+                let path = match std::fs::canonicalize(path) {
+                    Ok(path) => path,
+                    Err(e) => {
+                        items.push(skip(finding, &format!("cannot resolve path: {e}")));
+                        continue;
+                    }
+                };
+                if resolved
+                    .iter()
+                    .flatten()
+                    .any(|child| child != &path && child.starts_with(&path))
+                {
+                    items.push(skip(finding, "refused: overlaps a more specific finding"));
+                    continue;
+                }
+                if findings.iter().zip(&resolved).any(|(other, resolved)| {
+                    resolved.as_ref() == Some(&path) && other.safety > finding.safety
+                }) {
+                    items.push(skip(
+                        finding,
+                        "same path has a stricter safety classification",
+                    ));
+                    continue;
+                }
+                if !paths.insert(path.clone()) {
+                    items.push(skip(finding, "duplicate path"));
+                    continue;
+                }
+                let mut finding = finding.clone();
+                finding.action = CleanAction::RemovePath { path };
                 total_bytes += finding.bytes;
                 items.push(PlannedItem {
-                    finding: finding.clone(),
+                    finding,
                     disposition: Disposition::Remove {
                         via: if opts.to_trash {
                             "trash".to_string()
@@ -97,13 +137,40 @@ fn refusal_reason(path: &Path) -> Option<String> {
         match component {
             Component::ParentDir => return Some("refused: `..` in path".to_string()),
             Component::RootDir | Component::Prefix(_) => {}
-            _ => normal_components += 1,
+            Component::Normal(_) => normal_components += 1,
+            Component::CurDir => {}
         }
     }
     if normal_components == 0 {
         return Some("refused: filesystem root".to_string());
     }
     None
+}
+
+/// Check every existing component before resolving it; canonicalizing first
+/// would hide a junction or symlink in a parent directory.
+fn validate_ancestors(path: &Path) -> Result<(), String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| e.to_string())?
+            .join(path)
+    };
+    for ancestor in absolute.ancestors() {
+        match std::fs::symlink_metadata(ancestor) {
+            Ok(meta) if crate::scanner::metadata_is_link_or_reparse(&meta) => {
+                return Err(format!(
+                    "refused: symbolic link or reparse point: {}",
+                    ancestor.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("cannot inspect {}: {e}", ancestor.display())),
+        }
+    }
+    Ok(())
 }
 
 fn skip(finding: &Finding, reason: &str) -> PlannedItem {
@@ -148,6 +215,27 @@ pub fn execute(plan: &CleanPlan, opts: &CleanOptions) -> CleanReceipt {
             ));
             continue;
         };
+        if !matches!(via.as_str(), "trash" | "permanent") {
+            receipt.errors.push(format!("unknown delete method: {via}"));
+            continue;
+        }
+        if !opts.include.allows(item.finding.safety)
+            || (item.finding.safety == crate::model::Safety::Danger && !opts.force_danger)
+        {
+            receipt.errors.push(format!(
+                "{}: execution options exclude this safety level",
+                item.finding.label
+            ));
+            continue;
+        }
+        if let Some(reason) = refusal_reason(&path) {
+            receipt.errors.push(reason);
+            continue;
+        }
+        if let Err(reason) = validate_ancestors(&path) {
+            receipt.errors.push(reason);
+            continue;
+        }
         if !opts.execute {
             receipt.freed_bytes += item.finding.bytes;
             receipt.removed.push(RemovedItem {
@@ -156,6 +244,16 @@ pub fn execute(plan: &CleanPlan, opts: &CleanOptions) -> CleanReceipt {
                 via: via.clone(),
                 safety: item.finding.safety,
             });
+            continue;
+        }
+        if item.finding.detector_id == "temp"
+            && path.exists()
+            && !crate::detectors::temp::is_stale(&path)
+        {
+            receipt.errors.push(format!(
+                "{}: temp contents changed or could not be verified",
+                path.display()
+            ));
             continue;
         }
         // Re-validate at delete time: refuse links (swapped after planning)

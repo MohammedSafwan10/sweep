@@ -25,7 +25,9 @@ impl Detector for GradleDetector {
             .filter_map(|n| parse_dist_version(n).map(|v| (v, n)))
             .max();
         for name in &versions {
-            let is_newest = newest_dist.as_ref().is_some_and(|(_, n)| *n == name);
+            let is_newest = newest_dist
+                .as_ref()
+                .is_some_and(|(v, _)| Some(*v) == parse_dist_version(name));
             if is_newest {
                 continue;
             }
@@ -85,11 +87,16 @@ impl Detector for GradleDetector {
 /// `gradle-8.13-all` -> (8, 13, 0). Accepts `-bin`/`-all` suffixes.
 fn parse_dist_version(name: &str) -> Option<(u64, u64, u64)> {
     let rest = name.strip_prefix("gradle-")?;
-    let version = rest.split('-').next()?;
+    let version = rest
+        .strip_suffix("-bin")
+        .or_else(|| rest.strip_suffix("-all"))?;
     parse_simple_version(version)
 }
 
 fn parse_simple_version(s: &str) -> Option<(u64, u64, u64)> {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+        return None;
+    }
     let mut parts = s.split('.');
     let major: u64 = parts.next()?.parse().ok()?;
     let minor: u64 = parts.next().unwrap_or("0").parse().ok()?;

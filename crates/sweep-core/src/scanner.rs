@@ -192,11 +192,11 @@ pub fn scan_dir(
                     .or_insert((0, 0));
                 return WalkState::Continue;
             }
-            if !ft.is_file() || is_link_or_reparse(entry.path()) {
+            if !ft.is_file() {
                 return WalkState::Continue;
             }
-            let len = match entry.metadata() {
-                Ok(meta) => meta.len(),
+            let meta = match entry.metadata() {
+                Ok(meta) => meta,
                 Err(err) => {
                     if let Ok(mut w) = warnings.lock() {
                         if w.len() < MAX_WARNINGS {
@@ -208,6 +208,10 @@ pub fn scan_dir(
                     return WalkState::Continue;
                 }
             };
+            if metadata_is_link_or_reparse(&meta) {
+                return WalkState::Continue;
+            }
+            let len = meta.len();
             shard.files += 1;
             shard.since_files += 1;
             shard.since_bytes += len;
@@ -411,30 +415,32 @@ pub fn format_bytes(bytes: u64) -> String {
 /// plain directories, so without this check scans descend into them —
 /// looping or double-counting trees like `WindowsApps` or OneDrive roots.
 pub(crate) fn is_link_or_reparse(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|meta| metadata_is_link_or_reparse(&meta))
+        .unwrap_or(true)
+}
+
+pub(crate) fn metadata_is_link_or_reparse(meta: &std::fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        std::fs::symlink_metadata(path)
-            .map(|m| {
-                m.file_type().is_symlink()
-                    || m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-            })
-            .unwrap_or(false)
+        meta.file_type().is_symlink() || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
     }
     #[cfg(not(windows))]
     {
-        std::fs::symlink_metadata(path)
-            .map(|m| m.file_type().is_symlink())
-            .unwrap_or(false)
+        meta.file_type().is_symlink()
     }
 }
 
 /// Display path without the Windows `\\?\` verbatim prefix from canonicalize.
-fn display_path(p: &Path) -> PathBuf {
-    let s = p.display().to_string();
+/// Human display form of a path: strips the Windows `\\?\` verbatim prefix
+/// from canonicalized paths. Display-only and lossy (non-UTF8 names may
+/// collapse) — never use for deletion or identity comparisons.
+pub fn display_path(p: &Path) -> PathBuf {
     #[cfg(windows)]
     {
+        let s = p.display().to_string();
         if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
             return PathBuf::from(format!(r"\\{rest}"));
         }
@@ -442,7 +448,7 @@ fn display_path(p: &Path) -> PathBuf {
             return PathBuf::from(rest);
         }
     }
-    PathBuf::from(s)
+    p.to_path_buf()
 }
 
 fn trim_warning(s: &str) -> String {

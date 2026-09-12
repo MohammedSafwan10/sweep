@@ -38,6 +38,9 @@ impl Detector for AndroidDetector {
                 if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                     continue;
                 }
+                if !known_component(group, &entry.file_name().to_string_lossy()) {
+                    continue;
+                }
                 if let Some(f) = dir_finding(
                     self.id(),
                     format!("android {group}/{}", entry.file_name().to_string_lossy()),
@@ -51,6 +54,19 @@ impl Detector for AndroidDetector {
         }
         out
     }
+}
+
+fn known_component(group: &str, name: &str) -> bool {
+    if matches!(group, "platforms" | "sources") {
+        return name.strip_prefix("android-").is_some_and(|version| {
+            !version.is_empty() && version.bytes().all(|b| b.is_ascii_digit())
+        });
+    }
+    let parts: Vec<_> = name.split('.').collect();
+    (2..=4).contains(&parts.len())
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
 }
 
 #[cfg(test)]

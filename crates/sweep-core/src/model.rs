@@ -177,7 +177,8 @@ pub enum Disposition {
 pub struct CleanReceipt {
     pub schema_version: u32,
     pub dry_run: bool,
-    /// Bytes that would be / were freed.
+    /// Logical bytes that would be / were removed from the original paths.
+    /// Trash still occupies disk space; this is not allocated-space accounting.
     pub freed_bytes: u64,
     pub removed: Vec<RemovedItem>,
     pub skipped: Vec<SkippedItem>,

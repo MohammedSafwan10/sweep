@@ -73,11 +73,16 @@ sweep clean [--id ID...] [--only safe|caution|all] [--force] [--permanent]
   "schema_version": 1,
   "dry_run": true,
   "freed_bytes": 1234,
-  "removed": [{"path": "...", "bytes": 1234, "via": "trash"}],
-  "skipped": [{"label": "...", "reason": "manual steps required: ..."}],
+  "removed": [{"path": "...", "bytes": 1234, "via": "trash", "safety": "safe"}],
+  "skipped": [{"label": "...", "safety": "caution", "reason": "manual steps required: ..."}],
   "errors": []
 }
 ```
+
+Paths in findings/receipts are canonicalized absolute paths; on Windows
+they may carry the `\\?\` verbatim prefix. Compare with canonicalization
+(or suffix-match), never raw string equality. Human terminal output shows
+the stripped display form instead.
 
 ## Recommended agent flow
 

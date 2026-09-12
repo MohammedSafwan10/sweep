@@ -65,10 +65,10 @@ fn scan_missing_path_fails_with_exit_1() {
 }
 
 #[test]
-fn clean_is_dry_run_by_default() {
-    let tmp = tempfile::tempdir().unwrap();
+fn detectors_json_contract_smoke() {
+    // Machine-dependent (real home dir): only the envelope is asserted.
     let out = sweep()
-        .args(["detectors", "--json"])
+        .args(["detectors", "--json", "--no-docker"])
         .assert()
         .success()
         .get_output()
@@ -77,7 +77,46 @@ fn clean_is_dry_run_by_default() {
     let v: Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["schema_version"], 1);
     assert!(v["findings"].is_array());
-    let _ = tmp;
+    assert!(v["total_bytes"].as_u64().is_some());
+}
+
+#[test]
+fn clean_dry_run_receipt_is_exact_and_deletes_nothing() {
+    // Hermetic: a fake Flutter project under --roots, scoped by --id so no
+    // real-home detector can leak into the assertion.
+    let tmp = tempfile::tempdir().unwrap();
+    let app = tmp.path().join("myapp");
+    fs::create_dir_all(app.join("build")).unwrap();
+    fs::write(app.join("pubspec.yaml"), "name: myapp").unwrap();
+    fs::write(app.join("build").join("out"), vec![0u8; 1234]).unwrap();
+
+    let out = sweep()
+        .args([
+            "clean",
+            "--json",
+            "--roots",
+            &app.display().to_string(),
+            "--no-docker",
+            "--id",
+            "flutter-build",
+        ])
+        .assert()
+        .success()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    let v: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["dry_run"], true);
+    assert_eq!(v["freed_bytes"], 1234);
+    assert_eq!(v["removed"].as_array().unwrap().len(), 1);
+    assert_eq!(v["removed"][0]["bytes"], 1234);
+    assert_eq!(v["removed"][0]["via"], "trash");
+    assert_eq!(v["removed"][0]["safety"], "safe");
+    assert!(v["errors"].as_array().unwrap().is_empty());
+    // Dry run: build output still on disk.
+    assert!(app.join("build").join("out").exists());
 }
 
 #[test]

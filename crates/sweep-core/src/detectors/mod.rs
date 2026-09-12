@@ -57,10 +57,19 @@ impl Ctx {
                 let p = local_app_data.join("Android").join("Sdk");
                 p.is_dir().then_some(p)
             });
-        let npm_cache = local_app_data.join("npm-cache");
+        let npm_cache = var_path("npm_config_cache")
+            .or_else(|| var_path("NPM_CONFIG_CACHE"))
+            .unwrap_or_else(|| {
+                if cfg!(windows) {
+                    local_app_data.join("npm-cache")
+                } else {
+                    home.join(".npm")
+                }
+            });
         let pnpm_store = local_app_data.join("pnpm").join("store");
-        let yarn_cache = local_app_data.join("Yarn");
-        let gradle_home = home.join(".gradle");
+        let yarn_cache = var_path("YARN_CACHE_FOLDER")
+            .unwrap_or_else(|| local_app_data.join("Yarn").join("Cache"));
+        let gradle_home = var_path("GRADLE_USER_HOME").unwrap_or_else(|| home.join(".gradle"));
         let temp_dir = std::env::temp_dir();
         let docker_data_files = vec![
             local_app_data
@@ -109,7 +118,7 @@ impl Ctx {
             android_sdk: Some(local.join("Android").join("Sdk")),
             npm_cache: local.join("npm-cache"),
             pnpm_store: local.join("pnpm").join("store"),
-            yarn_cache: local.join("Yarn"),
+            yarn_cache: local.join("Yarn").join("Cache"),
             gradle_home: root.join(".gradle"),
             temp_dir: root.join("Temp"),
             docker_data_files: vec![local.join("Docker").join("docker_data.vhdx")],
@@ -192,7 +201,7 @@ pub(crate) fn dir_finding(
     safety: Safety,
     detail: impl Into<String>,
 ) -> Option<Finding> {
-    if !path.is_dir() {
+    if !path.is_dir() || crate::scanner::is_link_or_reparse(path) {
         return None;
     }
     let (bytes, _) = size_of_dir(path);
@@ -231,6 +240,7 @@ pub(crate) fn find_projects(roots: &[PathBuf], marker: &str) -> Vec<PathBuf> {
         "__pycache__",
     ];
     let mut projects = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for root in roots {
         if !root.is_dir() || projects.len() >= 500 {
             continue;
@@ -269,6 +279,12 @@ pub(crate) fn find_projects(roots: &[PathBuf], marker: &str) -> Vec<PathBuf> {
                     .is_some_and(|n| name_matches(marker, n))
             {
                 if let Some(parent) = entry.path().parent() {
+                    let Ok(parent) = std::fs::canonicalize(parent) else {
+                        continue;
+                    };
+                    if !seen.insert(parent.clone()) {
+                        continue;
+                    }
                     projects.push(parent.to_path_buf());
                     if projects.len() >= 500 {
                         break;
