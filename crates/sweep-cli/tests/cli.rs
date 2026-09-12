@@ -91,9 +91,19 @@ fn json_execute_requires_yes() {
 }
 
 #[test]
-fn bad_only_value_is_rejected() {
+fn bad_only_value_is_rejected_with_exit_1() {
     sweep()
         .args(["clean", "--only", "everything"])
         .assert()
-        .failure();
+        .failure()
+        .code(1);
+}
+
+#[test]
+fn invalid_roots_dir_is_rejected() {
+    sweep()
+        .args(["detectors", "--roots", "C:/definitely/not/here/sweep-xyz"])
+        .assert()
+        .failure()
+        .code(1);
 }

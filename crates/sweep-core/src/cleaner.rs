@@ -7,18 +7,24 @@
 //! - v1 only deletes paths. `RunCommand`/`Manual` findings are reported
 //!   with instructions, never executed — running foreign CLIs with
 //!   destructive flags deserves its own audited milestone.
+//! - Symlinks are never deleted through: a swapped link between plan and
+//!   execute turns into an error, not a delete.
+//! - Structural guardrails refuse empty paths, filesystem roots and any
+//!   path containing `..`, even if a detector ever emits one.
 
 use crate::model::{
     CleanAction, CleanOptions, CleanReceipt, Disposition, Finding, PlannedItem, RemovedItem,
     SkippedItem, SCHEMA_VERSION,
 };
+use std::path::{Component, Path, PathBuf};
 
 pub struct CleanPlan {
     pub items: Vec<PlannedItem>,
     pub total_bytes: u64,
 }
 
-/// Build the plan: filter by safety level, drop vanished paths, total bytes.
+/// Build the plan: filter by safety level, refuse links and protected
+/// paths, drop vanished paths, total bytes.
 pub fn plan(findings: &[Finding], opts: &CleanOptions) -> CleanPlan {
     let mut items = Vec::new();
     let mut total_bytes: u64 = 0;
@@ -33,9 +39,24 @@ pub fn plan(findings: &[Finding], opts: &CleanOptions) -> CleanPlan {
         }
         match &finding.action {
             CleanAction::RemovePath { path } => {
-                if !path.exists() {
-                    items.push(skip(finding, "path already gone"));
+                if let Some(reason) = refusal_reason(path) {
+                    items.push(skip(finding, &reason));
                     continue;
+                }
+                match std::fs::symlink_metadata(path) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        items.push(skip(finding, "path already gone"));
+                        continue;
+                    }
+                    Err(e) => {
+                        items.push(skip(finding, &format!("cannot stat path: {e}")));
+                        continue;
+                    }
+                    Ok(meta) if meta.file_type().is_symlink() => {
+                        items.push(skip(finding, "refused: path is a symbolic link"));
+                        continue;
+                    }
+                    Ok(_) => {}
                 }
                 total_bytes += finding.bytes;
                 items.push(PlannedItem {
@@ -66,6 +87,25 @@ pub fn plan(findings: &[Finding], opts: &CleanOptions) -> CleanPlan {
     CleanPlan { items, total_bytes }
 }
 
+/// Structural refusal independent of any detector: roots, empties, `..`.
+fn refusal_reason(path: &Path) -> Option<String> {
+    if path.as_os_str().is_empty() {
+        return Some("refused: empty path".to_string());
+    }
+    let mut normal_components = 0;
+    for component in path.components() {
+        match component {
+            Component::ParentDir => return Some("refused: `..` in path".to_string()),
+            Component::RootDir | Component::Prefix(_) => {}
+            _ => normal_components += 1,
+        }
+    }
+    if normal_components == 0 {
+        return Some("refused: filesystem root".to_string());
+    }
+    None
+}
+
 fn skip(finding: &Finding, reason: &str) -> PlannedItem {
     PlannedItem {
         finding: finding.clone(),
@@ -78,6 +118,9 @@ fn skip(finding: &Finding, reason: &str) -> PlannedItem {
 /// Execute a plan. Dry-run (`execute: false`) returns the receipt without
 /// touching anything. Real runs continue past single-item errors and
 /// report them in `receipt.errors`.
+///
+/// The delete method comes from the plan's recorded `via`, never from a
+/// second options struct, so a plan can't silently change meaning.
 pub fn execute(plan: &CleanPlan, opts: &CleanOptions) -> CleanReceipt {
     let mut receipt = CleanReceipt {
         schema_version: SCHEMA_VERSION,
@@ -92,38 +135,67 @@ pub fn execute(plan: &CleanPlan, opts: &CleanOptions) -> CleanReceipt {
             if let Disposition::Skipped { reason } = &item.disposition {
                 receipt.skipped.push(SkippedItem {
                     label: item.finding.label.clone(),
+                    safety: item.finding.safety,
                     reason: reason.clone(),
                 });
             }
             continue;
         };
+        let Some(path) = action_path(&item.finding) else {
+            receipt.errors.push(format!(
+                "{}: plan/action mismatch (no path to remove)",
+                item.finding.label
+            ));
+            continue;
+        };
         if !opts.execute {
             receipt.freed_bytes += item.finding.bytes;
             receipt.removed.push(RemovedItem {
-                path: action_path(&item.finding).unwrap_or_default(),
+                path,
                 bytes: item.finding.bytes,
                 via: via.clone(),
+                safety: item.finding.safety,
             });
             continue;
         }
-        let Some(path) = action_path(&item.finding) else {
-            receipt
-                .errors
-                .push(format!("{}: no path to remove", item.finding.label));
-            continue;
+        // Re-validate at delete time: refuse links (swapped after planning)
+        // and re-stat directories properly (dir metadata len is NOT the
+        // subtree size — that undercounted receipts before).
+        let (is_dir, bytes_now) = match std::fs::symlink_metadata(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                receipt.skipped.push(SkippedItem {
+                    label: item.finding.label.clone(),
+                    safety: item.finding.safety,
+                    reason: "vanished between plan and execute".to_string(),
+                });
+                continue;
+            }
+            Err(e) => {
+                receipt.errors.push(format!(
+                    "{} ({}): re-stat failed: {e}",
+                    item.finding.label,
+                    path.display()
+                ));
+                continue;
+            }
+            Ok(meta) if meta.file_type().is_symlink() => {
+                receipt.errors.push(format!(
+                    "{} ({}): refused: became a symbolic link after planning",
+                    item.finding.label,
+                    path.display()
+                ));
+                continue;
+            }
+            Ok(meta) => (
+                meta.is_dir(),
+                if meta.is_dir() {
+                    crate::scanner::size_of_dir(&path).0
+                } else {
+                    meta.len()
+                },
+            ),
         };
-        // Re-stat at delete time: sizes may have changed since the scan.
-        let bytes_now = path
-            .metadata()
-            .map(|m| m.len())
-            .unwrap_or(item.finding.bytes);
-        let result = if opts.to_trash {
-            trash::delete(&path).map_err(|e| e.to_string())
-        } else if path.is_dir() {
-            remove_dir_all::remove_dir_all(&path).map_err(|e| e.to_string())
-        } else {
-            std::fs::remove_file(&path).map_err(|e| e.to_string())
-        };
+        let result = delete_path(&path, is_dir, via == "trash");
         match result {
             Ok(()) => {
                 receipt.freed_bytes += bytes_now;
@@ -131,6 +203,7 @@ pub fn execute(plan: &CleanPlan, opts: &CleanOptions) -> CleanReceipt {
                     path,
                     bytes: bytes_now,
                     via: via.clone(),
+                    safety: item.finding.safety,
                 });
             }
             Err(e) => {
@@ -143,7 +216,39 @@ pub fn execute(plan: &CleanPlan, opts: &CleanOptions) -> CleanReceipt {
     receipt
 }
 
-fn action_path(finding: &Finding) -> Option<std::path::PathBuf> {
+fn delete_path(path: &Path, is_dir: bool, to_trash: bool) -> Result<(), String> {
+    if to_trash {
+        return trash::delete(path).map_err(|e| e.to_string());
+    }
+    if is_dir {
+        // Handles Windows long paths and read-only trees.
+        return remove_dir_all::remove_dir_all(path).map_err(|e| e.to_string());
+    }
+    // remove_file fails on read-only files (git objects, caches);
+    // clear the flag first — the trash path above doesn't need this.
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        let mut perms = meta.permissions();
+        make_writable(&mut perms);
+        let _ = std::fs::set_permissions(path, perms);
+    }
+    std::fs::remove_file(path).map_err(|e| e.to_string())
+}
+
+/// Add owner-write without clobbering other bits. (`set_readonly(false)`
+/// trips `clippy::permission_set_readonly_false` and is Windows-only in
+/// spirit; this is portable and lint-clean on MSRV 1.74.)
+#[cfg(windows)]
+fn make_writable(perms: &mut std::fs::Permissions) {
+    perms.set_readonly(false);
+}
+
+#[cfg(not(windows))]
+fn make_writable(perms: &mut std::fs::Permissions) {
+    use std::os::unix::fs::PermissionsExt;
+    perms.set_mode(perms.mode() | 0o200);
+}
+
+fn action_path(finding: &Finding) -> Option<PathBuf> {
     match &finding.action {
         CleanAction::RemovePath { path } => Some(path.clone()),
         _ => None,
@@ -161,7 +266,6 @@ mod tests {
     use super::*;
     use crate::model::{IncludeLevel, Safety};
     use std::fs;
-    use std::path::Path;
 
     fn finding(label: &str, path: &Path, bytes: u64, safety: Safety) -> Finding {
         Finding {
@@ -203,17 +307,33 @@ mod tests {
     }
 
     #[test]
-    fn execute_permanent_deletes_and_counts() {
+    fn execute_permanent_deletes_and_counts_true_dir_bytes() {
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("junk");
         fs::create_dir_all(&target).unwrap();
         fs::write(target.join("f"), vec![0u8; 50]).unwrap();
-        let findings = vec![finding("junk", &target, 50, Safety::Safe)];
+        // Lie in the finding: receipt must report re-statted bytes (50), not 7.
+        let findings = vec![finding("junk", &target, 7, Safety::Safe)];
         let receipt = clean(&findings, &opts());
         assert!(!receipt.dry_run);
         assert!(!target.exists());
         assert_eq!(receipt.removed.len(), 1);
         assert_eq!(receipt.removed[0].via, "permanent");
+        assert_eq!(receipt.freed_bytes, 50);
+        assert!(receipt.errors.is_empty());
+    }
+
+    #[test]
+    fn execute_deletes_readonly_files_permanently() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("ro.bin");
+        fs::write(&target, vec![0u8; 32]).unwrap();
+        let mut perms = fs::metadata(&target).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&target, perms).unwrap();
+        let findings = vec![finding("ro", &target, 32, Safety::Safe)];
+        let receipt = clean(&findings, &opts());
+        assert!(!target.exists());
         assert!(receipt.errors.is_empty());
     }
 
@@ -260,6 +380,45 @@ mod tests {
         let r = clean(&findings, &safe_only);
         assert!(target.exists());
         assert_eq!(r.skipped.len(), 1);
+    }
+
+    #[test]
+    fn guardrails_refuse_roots_empties_and_dotdot() {
+        let roots: Vec<PathBuf> = if cfg!(windows) {
+            vec![PathBuf::from(r"C:\")]
+        } else {
+            vec![PathBuf::from("/")]
+        };
+        for root in roots
+            .into_iter()
+            .chain([PathBuf::new(), PathBuf::from("/tmp/../x")])
+        {
+            let findings = vec![finding("evil", &root, 999, Safety::Safe)];
+            let r = clean(&findings, &opts());
+            assert!(r.removed.is_empty(), "must not plan {}", root.display());
+            assert_eq!(r.skipped.len(), 1);
+        }
+    }
+
+    #[test]
+    fn symlinks_are_never_deleted_through() {
+        let tmp = tempfile::tempdir().unwrap();
+        let victim = tmp.path().join("victim");
+        fs::create_dir_all(&victim).unwrap();
+        fs::write(victim.join("keep"), vec![0u8; 16]).unwrap();
+        let link = tmp.path().join("link");
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_dir(&victim, &link).is_ok();
+        #[cfg(not(windows))]
+        let made = std::os::unix::fs::symlink(&victim, &link).is_ok();
+        if !made {
+            // No privilege to create links (stock Windows): nothing to test.
+            return;
+        }
+        let findings = vec![finding("link", &link, 16, Safety::Safe)];
+        let r = clean(&findings, &opts());
+        assert!(r.removed.is_empty());
+        assert!(victim.join("keep").exists(), "victim must survive");
     }
 
     #[test]

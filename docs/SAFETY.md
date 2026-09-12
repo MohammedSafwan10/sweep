@@ -10,6 +10,10 @@ Every cleanable thing carries a label:
 | `CAUTION` | Deletable, but rebuilding costs minutes or mobile data (`node_modules`, gradle `modules-2`, Android NDK/platforms, Docker vhdx). | Needs `--only caution` (or `all`). |
 | `DANGER` | Real data-loss risk if misclassified. Reserved for future detectors (e.g. anything holding live databases). | Needs `--only all` **plus** `--force`. |
 
+> v1 note: no detector emits `Danger` yet — the Docker vhdx is `Caution`+manual
+> (reported with instructions, never executed). The `All`+`--force` gate is
+> covered by cleaner unit tests so future detectors inherit it.
+
 ## Guarantees
 
 1. **Dry-run by default.** `sweep clean` without `--execute` only plans and reports.

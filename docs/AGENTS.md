@@ -6,10 +6,10 @@ This is the machine contract. Human docs: `README.md`, `docs/SAFETY.md`.
 
 1. **Read-only first.** Always run `scan` / `detectors` and show the human the plan before anything destructive.
 2. **`clean` is dry-run by default.** `--execute` requires `--yes` when combined with `--json`. Never pass `--yes` without showing the plan to the human first.
-3. **Never `--permanent`, never `--force`** without explicit human approval in this session. `DANGER` items (volumes, live data) are off-limits by default.
+3. **Never `--permanent`, never `--force`** without explicit human approval in this session. `DANGER` items are off-limits by default (v1 ships zero `Danger` findings — the gate is covered by unit tests for future detectors; the Docker vhdx is `Caution`+manual and always skipped, never auto-deleted).
 4. **Pin `schema_version`.** If `schema_version != 1`, stop and report — the contract changed.
 5. **Parse JSON, never screen-scrape** human output.
-6. Prefer `--id <detector>` to scope deletes (e.g. `--id pub-cache`).
+6. Prefer `--id <detector>` to scope deletes (e.g. `--id pub-cache`). Unknown `--id` values exit 1 — treat as a typo signal, not as "nothing found".
 
 ## Commands
 
@@ -21,7 +21,7 @@ sweep clean [--id ID...] [--only safe|caution|all] [--force] [--permanent]
 ```
 
 - `--only` default is `safe`. `caution` adds slow-to-rebuild items. `all` still needs `--force` for `danger`.
-- `--roots` adds project roots for artifact detectors (default: current directory).
+- `--roots` replaces the default project root (current directory) for artifact detectors; repeatable.
 - `--no-docker` skips Docker detection (daemon down / offline machines).
 
 ## Exit codes
@@ -29,8 +29,8 @@ sweep clean [--id ID...] [--only safe|caution|all] [--force] [--permanent]
 | Code | Meaning |
 | ---- | ------- |
 | 0 | Success (including "nothing found" and clean dry-runs) |
-| 1 | Fatal: bad flags, unreadable scan root, `--execute --json` without `--yes` |
-| 2 | Finished with per-item errors (see `errors[]`; `removed[]` still lists what worked) |
+| 1 | App fatal: unreadable scan root, bad `--only`, unknown `--id`, `--execute --json` without `--yes` |
+| 2 | CLI usage error (bad flags, unparsable sizes) OR clean finished with per-item errors (see `errors[]`; `removed[]` still lists what worked) |
 
 ## JSON schemas (`schema_version: 1`)
 

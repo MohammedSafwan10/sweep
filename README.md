@@ -39,6 +39,7 @@ sweep clean --execute --only caution --yes      # include caution items, no prom
 ```
 
 Every command accepts `--json` for scripts and coding agents (see [docs/AGENTS.md](docs/AGENTS.md)).
+Full flags: `sweep scan --help`, `sweep detectors --help`, `sweep clean --help`.
 
 ## Safety first
 

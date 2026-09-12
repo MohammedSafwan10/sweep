@@ -44,22 +44,15 @@ impl Ctx {
     /// Resolve from environment variables with platform defaults.
     pub fn from_env() -> Self {
         let home = dirs_home();
-        let local_app_data = std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
+        let local_app_data = var_path("LOCALAPPDATA")
             .or_else(|| directories::BaseDirs::new().map(|b| b.data_local_dir().to_path_buf()))
             .unwrap_or_else(|| home.join("AppData").join("Local"));
-        let cargo_home = std::env::var_os("CARGO_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".cargo"));
-        let rustup_home = std::env::var_os("RUSTUP_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".rustup"));
-        let pub_cache = std::env::var_os("PUB_CACHE")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| local_app_data.join("Pub").join("Cache"));
-        let android_sdk = std::env::var_os("ANDROID_SDK_ROOT")
-            .or_else(|| std::env::var_os("ANDROID_HOME"))
-            .map(PathBuf::from)
+        let cargo_home = var_path("CARGO_HOME").unwrap_or_else(|| home.join(".cargo"));
+        let rustup_home = var_path("RUSTUP_HOME").unwrap_or_else(|| home.join(".rustup"));
+        let pub_cache =
+            var_path("PUB_CACHE").unwrap_or_else(|| local_app_data.join("Pub").join("Cache"));
+        let android_sdk = var_path("ANDROID_SDK_ROOT")
+            .or_else(|| var_path("ANDROID_HOME"))
             .or_else(|| {
                 let p = local_app_data.join("Android").join("Sdk");
                 p.is_dir().then_some(p)
@@ -81,7 +74,10 @@ impl Ctx {
                 .join("data")
                 .join("ext4.vhdx"),
         ];
-        let project_roots = vec![std::env::current_dir().unwrap_or_else(|_| home.clone())];
+        let project_roots = vec![std::env::current_dir()
+            .ok()
+            .filter(|p| p.is_dir())
+            .unwrap_or_else(|| home.clone())];
         Self {
             home,
             local_app_data,
@@ -126,11 +122,32 @@ impl Ctx {
 fn dirs_home() -> PathBuf {
     directories::BaseDirs::new()
         .map(|b| b.home_dir().to_path_buf())
-        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+        .or_else(|| var_path("USERPROFILE"))
+        .or_else(|| var_path("HOME"))
+        // A relative fallback like "." would poison every derived path
+        // (cargo_home, gradle_home, ...) into CWD-relative locations.
+        .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// Non-empty env var as a path. Empty strings must not become `""` joins
+/// (which resolve against the current directory).
+fn var_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Name comparison following filesystem rules: ASCII case-insensitive
+/// on Windows (where `Build` and `build` are the same dir), exact
+/// elsewhere (where they can be different dirs).
+pub(crate) fn name_matches(known: &str, actual: &str) -> bool {
+    if cfg!(windows) {
+        known.eq_ignore_ascii_case(actual)
+    } else {
+        known == actual
+    }
+}
 /// One detector: one ecosystem's known cache/artifact locations.
 pub trait Detector: Send + Sync {
     fn id(&self) -> &'static str;
@@ -229,8 +246,13 @@ pub(crate) fn find_projects(roots: &[PathBuf], marker: &str) -> Vec<PathBuf> {
             .filter_entry(|e| {
                 if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                     if let Some(name) = e.file_name().to_str() {
-                        return !SKIP.contains(&name);
+                        if SKIP.iter().any(|s| name_matches(s, name)) {
+                            return false;
+                        }
                     }
+                    // Never descend into links/junctions: artifact dirs must
+                    // be real directories inside the project.
+                    return !crate::scanner::is_link_or_reparse(e.path());
                 }
                 true
             })
@@ -241,7 +263,10 @@ pub(crate) fn find_projects(roots: &[PathBuf], marker: &str) -> Vec<PathBuf> {
                 continue;
             }
             if entry.file_type().map(|t| t.is_file()).unwrap_or(false)
-                && entry.file_name().to_str() == Some(marker)
+                && entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|n| name_matches(marker, n))
             {
                 if let Some(parent) = entry.path().parent() {
                     projects.push(parent.to_path_buf());

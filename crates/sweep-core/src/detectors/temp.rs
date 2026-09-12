@@ -32,12 +32,15 @@ impl Detector for TempDetector {
         let mut scored: Vec<(u64, std::path::PathBuf, bool)> = Vec::new();
         for entry in entries.filter_map(|e| e.ok()) {
             let path = entry.path();
+            // file_type() is free (no extra syscall); metadata() follows
+            // links, so the dead `meta.is_symlink()` check it replaces
+            // could never fire. Links are refused before sizing.
+            if entry.file_type().map(|t| t.is_symlink()).unwrap_or(true) {
+                continue;
+            }
             let Ok(meta) = entry.metadata() else {
                 continue;
             };
-            if meta.is_symlink() {
-                continue;
-            }
             let old_enough = meta.modified().ok().zip(cutoff).is_some_and(|(m, c)| m < c);
             if !old_enough {
                 continue;
@@ -69,9 +72,8 @@ impl Detector for TempDetector {
 
 fn short(path: &std::path::Path) -> String {
     path.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("?")
-        .to_string()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "?".to_string())
 }
 
 #[cfg(test)]

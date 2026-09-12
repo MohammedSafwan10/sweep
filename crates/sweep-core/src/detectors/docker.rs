@@ -53,25 +53,50 @@ impl Detector for DockerDetector {
 
 fn file_name(path: &std::path::Path) -> String {
     path.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("?")
-        .to_string()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "?".to_string())
 }
 
 /// Best-effort `docker system df`; silently `None` when the daemon is down.
+/// Runs with a hard timeout: a hung docker CLI must never hang the scan.
 fn best_effort_df() -> Option<String> {
-    let out = std::process::Command::new("docker")
+    use std::io::Read;
+    use std::time::{Duration, Instant};
+
+    let mut child = std::process::Command::new("docker")
         .args(["system", "df"])
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
         .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    if text.trim().is_empty() {
-        None
-    } else {
-        Some(text.chars().take(800).collect())
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return None;
+                }
+                let mut text = String::new();
+                if let Some(out) = child.stdout.take() {
+                    // Bounded read: df output is small; cap defensively.
+                    if out.take(8192).read_to_string(&mut text).is_err() {
+                        return None;
+                    }
+                }
+                let text = text.trim().to_string();
+                if text.is_empty() {
+                    return None;
+                }
+                // Keep the finding detail readable.
+                return Some(text.chars().take(800).collect());
+            }
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
     }
 }
 

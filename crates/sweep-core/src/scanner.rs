@@ -9,6 +9,10 @@
 //! - Hidden files ARE included (dev caches live in hidden dirs like
 //!   `.cargo`, `AppData`); gitignore files are NOT respected — this is a
 //!   disk tool, not a source tool.
+//! - Sizes are logical (apparent) bytes from file metadata, not allocated
+//!   clusters: hardlinked files count once per link, sparse files (like a
+//!   Docker vhdx) report their logical size. Receipts therefore say
+//!   "would free ~N logical bytes", matching what caches re-download.
 
 use crate::model::{DirEntry, ScanOptions, ScanReport, SCHEMA_VERSION};
 use ignore::{WalkBuilder, WalkState};
@@ -170,6 +174,7 @@ pub fn scan_dir(
             // Never follow or count links: with follow_links(false) these are
             // yielded, not descended into — skip them entirely. Unknown
             // file types are skipped too rather than miscounted.
+            // Junctions need the reparse check: they pose as plain dirs.
             let Some(ft) = entry.file_type() else {
                 return WalkState::Continue;
             };
@@ -177,6 +182,9 @@ pub fn scan_dir(
                 return WalkState::Continue;
             }
             if ft.is_dir() {
+                if is_link_or_reparse(entry.path()) {
+                    return WalkState::Skip;
+                }
                 // Register empty dirs too so they show with 0 bytes.
                 shard
                     .dirs
@@ -184,7 +192,22 @@ pub fn scan_dir(
                     .or_insert((0, 0));
                 return WalkState::Continue;
             }
-            let len = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            if !ft.is_file() || is_link_or_reparse(entry.path()) {
+                return WalkState::Continue;
+            }
+            let len = match entry.metadata() {
+                Ok(meta) => meta.len(),
+                Err(err) => {
+                    if let Ok(mut w) = warnings.lock() {
+                        if w.len() < MAX_WARNINGS {
+                            w.push(trim_warning(&err.to_string()));
+                        } else {
+                            suppressed.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    return WalkState::Continue;
+                }
+            };
             shard.files += 1;
             shard.since_files += 1;
             shard.since_bytes += len;
@@ -211,13 +234,16 @@ pub fn scan_dir(
         // `shard` drops here per worker thread, flushing into `partials`.
     });
 
-    // Merge shards.
+    // Merge shards. A poisoned mutex means a worker panicked; recover its
+    // partial data instead of crashing the whole scan.
     let mut merged: HashMap<PathBuf, (u64, u64)> = HashMap::new();
     let mut big_files: Vec<(PathBuf, u64)> = Vec::new();
-    let mut total_files: u64 = 0;
-    let partials = partials.lock().expect("shard lock poisoned");
+    let mut worker_files: u64 = 0;
+    let partials = partials
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     for shard in partials.iter() {
-        total_files += shard.files;
+        worker_files += shard.files;
         for (path, (bytes, files)) in &shard.dirs {
             let slot = merged.entry(path.clone()).or_insert((0, 0));
             slot.0 += bytes;
@@ -254,7 +280,7 @@ pub fn scan_dir(
         }
         let depth = path
             .strip_prefix(&canon)
-            .map(|p| p.components().count().saturating_sub(1))
+            .map(|p| p.components().count())
             .unwrap_or(0);
         entries.push(DirEntry {
             path: display_path(path),
@@ -267,14 +293,30 @@ pub fn scan_dir(
     entries.sort_by(|a, b| b.bytes.cmp(&a.bytes).then(a.path.cmp(&b.path)));
     entries.truncate(opts.top);
 
-    let warnings = warnings.lock().expect("warning lock poisoned").clone();
+    // Cross-check the two independent counts: every counted file attributes
+    // itself up to the root, so the worker sum and the root aggregate must
+    // agree. A mismatch is reported, never hidden.
+    let mut warnings = warnings
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    if worker_files != root_files {
+        warnings.push(format!(
+            "internal count mismatch: workers saw {worker_files} files, root aggregate has {root_files}"
+        ));
+    }
+    // A full or unconsumed channel must not prevent the scan returning.
+    if let Some(tx) = progress {
+        let _ = tx.try_send(LiveProgress {
+            files_seen: root_files,
+            bytes_seen: root_bytes,
+        });
+    }
     Ok(ScanReport {
         schema_version: SCHEMA_VERSION,
         root: display_path(&canon),
         total_bytes: root_bytes,
-        // Files counted individually; root aggregate agrees but the
-        // authoritative count is the worker sum.
-        total_files: total_files.max(root_files),
+        total_files: root_files,
         total_dirs,
         warnings_suppressed: suppressed.load(Ordering::Relaxed),
         warnings,
@@ -285,6 +327,9 @@ pub fn scan_dir(
 /// Byte size of one directory subtree (single-threaded; for detectors).
 /// Symlinks are skipped. Returns bytes + file count.
 pub fn size_of_dir(path: &Path) -> (u64, u64) {
+    if is_link_or_reparse(path) {
+        return (0, 0);
+    }
     let mut bytes: u64 = 0;
     let mut files: u64 = 0;
     let walker = WalkBuilder::new(path)
@@ -295,10 +340,15 @@ pub fn size_of_dir(path: &Path) -> (u64, u64) {
         .git_global(false)
         .parents(false)
         .follow_links(false)
+        .filter_entry(|entry| !is_link_or_reparse(entry.path()))
         .build();
     for entry in walker {
         let Ok(entry) = entry else { continue };
         if entry.path_is_symlink() {
+            continue;
+        }
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        if is_dir && is_link_or_reparse(entry.path()) {
             continue;
         }
         if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
@@ -321,8 +371,8 @@ pub fn parse_size(s: &str) -> Result<u64, String> {
         .trim()
         .parse()
         .map_err(|_| format!("invalid size number: {s}"))?;
-    if num < 0.0 {
-        return Err(format!("negative size: {s}"));
+    if !num.is_finite() || num < 0.0 {
+        return Err(format!("invalid size (not a finite positive number): {s}"));
     }
     let mult: f64 = match unit.trim().to_ascii_lowercase().as_str() {
         "" | "b" => 1.0,
@@ -332,7 +382,11 @@ pub fn parse_size(s: &str) -> Result<u64, String> {
         "t" | "tb" | "tib" => 1024.0_f64.powi(4),
         other => return Err(format!("unknown size unit: {other}")),
     };
-    Ok((num * mult) as u64)
+    let bytes = num * mult;
+    if !bytes.is_finite() || bytes >= u64::MAX as f64 {
+        return Err(format!("size exceeds the supported range: {s}"));
+    }
+    Ok(bytes as u64)
 }
 
 /// Format bytes as `1.4 GiB` (1024-based, one decimal).
@@ -348,6 +402,31 @@ pub fn format_bytes(bytes: u64) -> String {
         format!("{} {}", bytes, UNITS[unit])
     } else {
         format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// True for symlinks and (on Windows) junctions / other reparse points.
+///
+/// `DirEntry::file_type().is_symlink()` misses junctions: they report as
+/// plain directories, so without this check scans descend into them —
+/// looping or double-counting trees like `WindowsApps` or OneDrive roots.
+pub(crate) fn is_link_or_reparse(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        std::fs::symlink_metadata(path)
+            .map(|m| {
+                m.file_type().is_symlink()
+                    || m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            })
+            .unwrap_or(false)
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::symlink_metadata(path)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
     }
 }
 
@@ -369,7 +448,14 @@ fn display_path(p: &Path) -> PathBuf {
 fn trim_warning(s: &str) -> String {
     const MAX: usize = 300;
     if s.len() > MAX {
-        format!("{}…", &s[..MAX])
+        // Byte-slicing could split a multi-byte char and panic; walk back
+        // to a boundary instead (`floor_char_boundary` needs Rust 1.91,
+        // MSRV here is 1.74).
+        let mut end = MAX.min(s.len());
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &s[..end])
     } else {
         s.to_string()
     }
@@ -484,6 +570,16 @@ mod tests {
         assert!(parse_size("10XB").is_err());
         assert!(parse_size("").is_err());
         assert!(parse_size("-5MB").is_err());
+        assert!(parse_size("nan").is_err());
+        assert!(parse_size("1e308GB").is_err(), "overflow must not saturate");
+    }
+
+    #[test]
+    fn trim_warning_never_splits_utf8() {
+        let s = "é".repeat(500); // 1000 bytes of 2-byte chars
+        let trimmed = trim_warning(&s);
+        assert!(trimmed.len() <= 300 + "…".len());
+        assert!(trimmed.ends_with('…'));
     }
 
     #[test]

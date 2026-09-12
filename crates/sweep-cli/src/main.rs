@@ -62,7 +62,7 @@ enum Command {
         /// Actually delete. Without it: plan + report only.
         #[arg(long)]
         execute: bool,
-        /// Skip the confirmation prompt (required with --json --execute).
+        /// Skip the confirmation prompt (required together with --json --execute).
         #[arg(long)]
         yes: bool,
         /// Machine-readable receipt.
@@ -130,7 +130,7 @@ fn run() -> Result<i32> {
             roots,
             no_docker,
         } => {
-            let ctx = build_ctx(roots, no_docker);
+            let ctx = build_ctx(&roots, no_docker)?;
             let findings = detectors::scan_all(&ctx);
             if json {
                 println!(
@@ -159,14 +159,13 @@ fn run() -> Result<i32> {
         } => {
             let include = Safety::parse_level(&only)
                 .with_context(|| format!("--only must be safe, caution or all (got {only})"))?;
-            let ctx = build_ctx(roots, no_docker);
-            let mut findings = detectors::scan_all(&ctx);
-            if !id.is_empty() {
-                findings.retain(|f| id.iter().any(|w| w == &f.detector_id));
-                if findings.is_empty() {
-                    bail!("no findings match --id (known ids listed by `sweep detectors`)");
-                }
+            if json && execute && !yes {
+                bail!("refusing --execute --json without --yes: agents must opt in explicitly");
             }
+            validate_ids(&id)?;
+            let ctx = build_ctx(&roots, no_docker)?;
+            let mut findings = detectors::scan_all(&ctx);
+            retain_ids(&mut findings, &id);
             let opts = CleanOptions {
                 execute,
                 to_trash: !permanent,
@@ -187,16 +186,17 @@ fn run() -> Result<i32> {
                 execute: false,
                 ..opts
             };
-            let preview = cleaner::clean(&findings, &dry);
+            let plan = cleaner::plan(&findings, &opts);
+            let preview = cleaner::execute(&plan, &dry);
             print_receipt_human(&preview, &dry);
             if !execute || preview.removed.is_empty() {
                 return Ok(0);
             }
-            if !confirm_human()? {
+            if !yes && !confirm_human()? {
                 println!("Aborted. Nothing deleted.");
                 return Ok(0);
             }
-            let receipt = cleaner::clean(&findings, &opts);
+            let receipt = cleaner::execute(&plan, &opts);
             print_receipt_human(&receipt, &opts);
             Ok(if receipt.errors.is_empty() { 0 } else { 2 })
         }
@@ -213,15 +213,41 @@ fn confirm_human() -> Result<bool> {
     Ok(line.trim().eq_ignore_ascii_case("y"))
 }
 
-fn build_ctx(roots: Vec<PathBuf>, no_docker: bool) -> Ctx {
+fn validate_ids(ids: &[String]) -> Result<()> {
+    let detectors = detectors::all_detectors();
+    for id in ids {
+        if !detectors.iter().any(|d| d.id() == id) {
+            bail!("unknown detector --id: {id}");
+        }
+    }
+    Ok(())
+}
+
+fn retain_ids(findings: &mut Vec<sweep_core::Finding>, ids: &[String]) {
+    if !ids.is_empty() {
+        findings.retain(|f| ids.contains(&f.detector_id));
+    }
+}
+
+fn build_ctx(roots: &[PathBuf], no_docker: bool) -> Result<Ctx> {
     let mut ctx = Ctx::from_env();
     if !roots.is_empty() {
-        ctx.project_roots = roots;
+        // --roots REPLACES the default (current directory); invalid entries
+        // fail loudly instead of silently scanning somewhere unexpected.
+        let mut kept = Vec::new();
+        for root in roots {
+            if root.is_dir() {
+                kept.push(root.clone());
+            } else {
+                bail!("--roots entry is not a directory: {}", root.display());
+            }
+        }
+        ctx.project_roots = kept;
     }
     if no_docker {
         ctx.docker_enabled = false;
     }
-    ctx
+    Ok(ctx)
 }
 
 fn print_scan_human(report: &sweep_core::ScanReport) {
@@ -245,6 +271,14 @@ fn print_scan_human(report: &sweep_core::ScanReport) {
     print_warnings(&report.warnings, report.warnings_suppressed);
 }
 
+fn safety_tag(safety: Safety) -> &'static str {
+    match safety {
+        Safety::Safe => "SAFE  ",
+        Safety::Caution => "CAUTION",
+        Safety::Danger => "DANGER",
+    }
+}
+
 fn print_findings_human(findings: &[sweep_core::Finding]) {
     if findings.is_empty() {
         println!("Nothing cleanable found. Your disk is already lean.");
@@ -257,12 +291,12 @@ fn print_findings_human(findings: &[sweep_core::Finding]) {
         findings.len()
     );
     for f in findings {
-        let tag = match f.safety {
-            Safety::Safe => "SAFE  ",
-            Safety::Caution => "CAUTION",
-            Safety::Danger => "DANGER",
-        };
-        println!("{:>10}  [{tag}]  {}", format_bytes(f.bytes), f.label);
+        println!(
+            "{:>10}  [{}]  {}",
+            format_bytes(f.bytes),
+            safety_tag(f.safety),
+            f.label
+        );
         if let sweep_core::CleanAction::RemovePath { path } = &f.action {
             println!("             {}", path.display());
         }
@@ -299,9 +333,10 @@ fn print_receipt_human(receipt: &sweep_core::CleanReceipt, opts: &CleanOptions) 
         );
         for r in &receipt.removed {
             println!(
-                "  {:>10}  [{}]  {}",
+                "  {:>10}  [{}]  [{}]  {}",
                 format_bytes(r.bytes),
                 r.via,
+                safety_tag(r.safety),
                 r.path.display()
             );
         }
@@ -309,7 +344,12 @@ fn print_receipt_human(receipt: &sweep_core::CleanReceipt, opts: &CleanOptions) 
     if !receipt.skipped.is_empty() {
         println!("\nSkipped:");
         for s in &receipt.skipped {
-            println!("  - {}: {}", s.label, s.reason.lines().next().unwrap_or(""));
+            println!(
+                "  - [{}] {}: {}",
+                safety_tag(s.safety),
+                s.label,
+                s.reason.lines().next().unwrap_or("")
+            );
         }
     }
     if !receipt.errors.is_empty() {

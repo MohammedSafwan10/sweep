@@ -63,9 +63,8 @@ fn depends_on_next(manifest: &std::path::Path) -> bool {
 fn short_name(project: &std::path::Path) -> String {
     project
         .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("?")
-        .to_string()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "?".to_string())
 }
 
 #[cfg(test)]

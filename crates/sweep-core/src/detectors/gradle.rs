@@ -107,7 +107,10 @@ fn read_dir_names(dir: &std::path::Path) -> Vec<String> {
     entries
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-        .filter_map(|e| e.file_name().into_string().ok())
+        // Lossy, not loss-less filtering: unparseable names fail version
+        // parsing below and are skipped — never silently corrupting the
+        // "newest" calculation by vanishing.
+        .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect()
 }
 

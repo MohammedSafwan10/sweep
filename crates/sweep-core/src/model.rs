@@ -190,10 +190,12 @@ pub struct RemovedItem {
     pub bytes: u64,
     /// "trash" or "permanent".
     pub via: String,
+    pub safety: Safety,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkippedItem {
     pub label: String,
+    pub safety: Safety,
     pub reason: String,
 }
