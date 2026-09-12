@@ -15,6 +15,8 @@ pub fn native(root: &Path) -> std::process::Command {
         "CARGO_HOME",
         "RUSTUP_HOME",
         "PUB_CACHE",
+        "PIP_CACHE_DIR",
+        "UV_CACHE_DIR",
         "ANDROID_SDK_ROOT",
         "ANDROID_HOME",
         "GRADLE_USER_HOME",

@@ -19,14 +19,16 @@ impl Detector for PipCacheDetector {
 
     fn scan(&self, ctx: &Ctx) -> Vec<Finding> {
         let mut out = Vec::new();
-        if let Some(f) = dir_finding(
-            self.id(),
-            "pip cache".to_string(),
-            &ctx.pip_cache,
-            Safety::Safe,
-            "HTTP/wheel cache; `pip cache purge` does the same. Re-downloaded on next install.",
-        ) {
-            out.push(f);
+        for name in ["http", "http-v2", "wheels"] {
+            if let Some(f) = dir_finding(
+                self.id(),
+                format!("pip cache/{name}"),
+                &ctx.pip_cache.join(name),
+                Safety::Safe,
+                "Recognized pip HTTP/wheel cache; re-downloaded on next install.",
+            ) {
+                out.push(f);
+            }
         }
         out
     }

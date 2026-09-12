@@ -1,4 +1,4 @@
-//! Python bytecode: `__pycache__` dirs whose every `.pyc`/`.pyo` has a
+//! Python bytecode: `__pycache__` dirs containing only `.pyc` files with a
 //! matching source file next to it.
 //!
 //! Conservative by construction: a single source-less bytecode file
@@ -6,7 +6,6 @@
 
 use super::{Ctx, Detector};
 use crate::model::{CleanAction, Finding, Safety};
-use crate::scanner::size_of_dir;
 use ignore::WalkBuilder;
 
 pub struct PyCacheDetector;
@@ -24,6 +23,7 @@ impl Detector for PyCacheDetector {
 
     fn scan(&self, ctx: &Ctx) -> Vec<Finding> {
         let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for root in &ctx.project_roots {
             if !root.is_dir() || out.len() >= MAX_FINDINGS {
                 continue;
@@ -38,6 +38,9 @@ impl Detector for PyCacheDetector {
                 .follow_links(false)
                 .filter_entry(|e| {
                     if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                        if e.path().join("pyvenv.cfg").is_file() {
+                            return false;
+                        }
                         if let Some(name) = e.file_name().to_str() {
                             // Prune everything that can't contain a
                             // source-backed __pycache__.
@@ -74,7 +77,13 @@ impl Detector for PyCacheDetector {
                 if !is_cache_dir {
                     continue;
                 }
-                if let Some(finding) = self.backed_dir(entry.path()) {
+                let Ok(path) = std::fs::canonicalize(entry.path()) else {
+                    continue;
+                };
+                if !seen.insert(path.clone()) {
+                    continue;
+                }
+                if let Some(finding) = self.backed_dir(&path) {
                     out.push(finding);
                     if out.len() >= MAX_FINDINGS {
                         break;
@@ -90,39 +99,11 @@ impl PyCacheDetector {
     /// A finding for the dir when it is non-empty and every bytecode file
     /// maps to an existing source file; `None` otherwise.
     fn backed_dir(&self, dir: &std::path::Path) -> Option<Finding> {
-        let mut backed_bytes: u64 = 0;
-        let mut count: u64 = 0;
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return None;
-        };
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                continue;
-            }
-            let is_bytecode = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| e.eq_ignore_ascii_case("pyc") || e.eq_ignore_ascii_case("pyo"));
-            if !is_bytecode {
-                continue;
-            }
-            let source = bytecode_source(&path)?;
-            if !source.is_file() {
-                return None;
-            }
-            count += 1;
-            backed_bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
-        }
-        if count == 0 || backed_bytes == 0 {
-            return None;
-        }
-        // Re-stat the dir for the receipt so it matches cleaner accounting.
-        let (bytes, _) = size_of_dir(dir);
+        let bytes = backed_bytes(dir)?;
         Some(Finding {
             detector_id: self.id().to_string(),
             label: format!("__pycache__/ ({})", short_parent(dir)),
-            bytes: bytes.max(backed_bytes),
+            bytes,
             safety: Safety::Safe,
             detail: "Bytecode with matching sources; regenerated on next import.".to_string(),
             action: CleanAction::RemovePath {
@@ -132,10 +113,44 @@ impl PyCacheDetector {
     }
 }
 
-/// `.../pkg/__pycache__/mod.cpython-312.pyc` -> `.../pkg/mod.py`.
+/// Validate every entry. Unknown files, nested directories, links, missing
+/// sources and unreadable metadata disqualify the directory.
+pub(crate) fn backed_bytes(dir: &std::path::Path) -> Option<u64> {
+    if crate::scanner::is_link_or_reparse(dir) {
+        return None;
+    }
+    let mut bytes = 0u64;
+    for entry in std::fs::read_dir(dir).ok()? {
+        let entry = entry.ok()?;
+        let meta = std::fs::symlink_metadata(entry.path()).ok()?;
+        if !meta.is_file() || crate::scanner::metadata_is_link_or_reparse(&meta) {
+            return None;
+        }
+        let source = bytecode_source(&entry.path())?;
+        let source_meta = std::fs::symlink_metadata(source).ok()?;
+        if !source_meta.is_file() || crate::scanner::metadata_is_link_or_reparse(&source_meta) {
+            return None;
+        }
+        bytes = bytes.checked_add(meta.len())?;
+    }
+    (bytes > 0).then_some(bytes)
+}
+
 fn bytecode_source(pyc: &std::path::Path) -> Option<std::path::PathBuf> {
+    if pyc.extension()? != "pyc" {
+        return None;
+    }
     let stem = pyc.file_stem()?.to_str()?;
-    let module = stem.split('.').next()?;
+    let (mut module, mut tag) = stem.rsplit_once('.')?;
+    if let Some(optimization) = tag.strip_prefix("opt-") {
+        if optimization.is_empty() || !optimization.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            return None;
+        }
+        (module, tag) = module.rsplit_once('.')?;
+    }
+    if module.is_empty() || !(tag.starts_with("cpython-") || tag.starts_with("pypy")) {
+        return None;
+    }
     let parent = pyc.parent()?.parent()?;
     Some(parent.join(format!("{module}.py")))
 }

@@ -1,17 +1,16 @@
-//! .NET projects: `bin/` + `obj/` next to a project/solution manifest.
+//! .NET projects: report `bin/` + `obj/` next to a project manifest.
 //!
-//! Only flagged beside `*.csproj`, `*.fsproj`, `*.vbproj` or `*.sln`
-//! files — never by bare directory name. Both are pure build output,
-//! restored by `dotnet build`.
+//! These directories can also contain application data. Report manual
+//! `dotnet clean` guidance instead of deleting whole directories.
 
 use super::{Ctx, Detector};
-use crate::model::{Finding, Safety};
+use crate::model::{CleanAction, Finding, Safety};
 use ignore::WalkBuilder;
 
 pub struct DotNetDetector;
 
 const MAX_FINDINGS: usize = 200;
-const MANIFEST_EXTS: &[&str] = &["csproj", "fsproj", "vbproj", "sln", "slnx"];
+const MANIFEST_EXTS: &[&str] = &["csproj", "fsproj", "vbproj"];
 
 impl Detector for DotNetDetector {
     fn id(&self) -> &'static str {
@@ -23,23 +22,31 @@ impl Detector for DotNetDetector {
 
     fn scan(&self, ctx: &Ctx) -> Vec<Finding> {
         let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for root in &ctx.project_roots {
             if !root.is_dir() || out.len() >= MAX_FINDINGS {
                 continue;
             }
             // Manifest dirs first; bin/obj lookups are then O(1) each.
             for project_dir in find_manifest_dirs(root) {
+                let Ok(project_dir) = std::fs::canonicalize(project_dir) else {
+                    continue;
+                };
+                if !seen.insert(project_dir.clone()) {
+                    continue;
+                }
                 for artifact in ["bin", "obj"] {
-                    if let Some(f) = super::dir_finding(
+                    if let Some(mut f) = super::dir_finding(
                         self.id(),
                         format!("{artifact}/ ({})", short_name(&project_dir)),
                         &project_dir.join(artifact),
-                        Safety::Safe,
-                        "dotnet build output; restored by `dotnet build`.",
+                        Safety::Caution,
+                        "Potential build output; may also contain application data. Not automatically deleted.",
                     ) {
+                        f.action = CleanAction::Manual { instructions: format!("Review the project in {} and use `dotnet clean` to remove tracked build outputs. Preserve application data in bin/obj.", project_dir.display()) };
                         out.push(f);
                         if out.len() >= MAX_FINDINGS {
-                            break;
+                            return out;
                         }
                     }
                 }

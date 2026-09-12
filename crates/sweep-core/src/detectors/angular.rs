@@ -1,4 +1,4 @@
-//! Angular projects: `.angular/` build cache.
+//! Angular projects: `.angular/cache/` build cache.
 //!
 //! Only flagged when the project's `package.json` depends on
 //! `@angular/cli` or `@angular/core` — never by bare directory name.
@@ -27,8 +27,8 @@ impl Detector for AngularDetector {
             }
             if let Some(f) = dir_finding(
                 self.id(),
-                format!(".angular/ ({})", short_name(&project)),
-                &project.join(".angular"),
+                format!(".angular/cache/ ({})", short_name(&project)),
+                &project.join(".angular").join("cache"),
                 Safety::Safe,
                 "Angular build cache; rebuilt by `ng build`/`ng serve`.",
             ) {
@@ -56,13 +56,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let ctx = Ctx::for_tests(tmp.path());
         let proj = ctx.project_roots[0].join("ngapp");
-        fs::create_dir_all(proj.join(".angular")).unwrap();
+        fs::create_dir_all(proj.join(".angular").join("cache")).unwrap();
         fs::write(
             proj.join("package.json"),
             r#"{"devDependencies": {"@angular/cli": "19.0.0"}}"#,
         )
         .unwrap();
-        fs::write(proj.join(".angular").join("a"), vec![0u8; 44]).unwrap();
+        fs::write(proj.join(".angular").join("cache").join("a"), vec![0u8; 44]).unwrap();
         let findings = super::AngularDetector.scan(&ctx);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].bytes, 44);
@@ -73,7 +73,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let ctx = Ctx::for_tests(tmp.path());
         let proj = ctx.project_roots[0].join("front");
-        fs::create_dir_all(proj.join(".angular")).unwrap();
+        fs::create_dir_all(proj.join(".angular").join("cache")).unwrap();
         fs::write(
             proj.join("package.json"),
             r#"{"devDependencies": {"vite": "6"}}"#,

@@ -246,6 +246,16 @@ pub fn execute(plan: &CleanPlan, opts: &CleanOptions) -> CleanReceipt {
             });
             continue;
         }
+        if item.finding.detector_id == "pycache"
+            && path.exists()
+            && crate::detectors::pycache::backed_bytes(&path).is_none()
+        {
+            receipt.errors.push(format!(
+                "{}: bytecode contents or sources changed after planning",
+                path.display()
+            ));
+            continue;
+        }
         if item.finding.detector_id == "temp"
             && path.exists()
             && !crate::detectors::temp::is_stale(&path)

@@ -82,14 +82,26 @@ impl Ctx {
             if cfg!(windows) {
                 local_app_data.join("pip").join("Cache")
             } else {
-                home.join(".cache").join("pip")
+                var_path("XDG_CACHE_HOME")
+                    .filter(|p| p.is_absolute())
+                    .unwrap_or_else(|| {
+                        if cfg!(target_os = "macos") {
+                            home.join("Library/Caches")
+                        } else {
+                            home.join(".cache")
+                        }
+                    })
+                    .join("pip")
             }
         });
         let uv_cache = var_path("UV_CACHE_DIR").unwrap_or_else(|| {
             if cfg!(windows) {
                 local_app_data.join("uv").join("cache")
             } else {
-                home.join(".cache").join("uv")
+                var_path("XDG_CACHE_HOME")
+                    .filter(|p| p.is_absolute())
+                    .unwrap_or_else(|| home.join(".cache"))
+                    .join("uv")
             }
         });
         let gradle_home = var_path("GRADLE_USER_HOME").unwrap_or_else(|| home.join(".gradle"));
@@ -197,7 +209,12 @@ pub(crate) fn package_has_dep(manifest: &Path, dep: &str) -> bool {
     };
     ["dependencies", "devDependencies", "peerDependencies"]
         .iter()
-        .any(|section| json.get(section).and_then(|d| d.get(dep)).is_some())
+        .any(|section| {
+            json.get(section)
+                .and_then(|d| d.get(dep))
+                .and_then(|v| v.as_str())
+                .is_some_and(|v| !v.trim().is_empty())
+        })
 }
 /// One detector: one ecosystem's known cache/artifact locations.
 pub trait Detector: Send + Sync {

@@ -31,6 +31,7 @@ impl Detector for PyTestCachesDetector {
 
     fn scan(&self, ctx: &Ctx) -> Vec<Finding> {
         let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for root in &ctx.project_roots {
             if !root.is_dir() || out.len() >= MAX_FINDINGS {
                 continue;
@@ -45,6 +46,9 @@ impl Detector for PyTestCachesDetector {
                 .follow_links(false)
                 .filter_entry(|e| {
                     if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                        if e.path().join("pyvenv.cfg").is_file() {
+                            return false;
+                        }
                         if let Some(name) = e.file_name().to_str() {
                             const SKIP: &[&str] = &[
                                 ".git",
@@ -79,9 +83,18 @@ impl Detector for PyTestCachesDetector {
                 if !is_cache_dir && !is_coverage {
                     continue;
                 }
+                if is_coverage && !is_coverage_data(path) {
+                    continue;
+                }
                 // Validated by a Python project marker in the same dir —
                 // never by bare directory name alone.
                 if !path.parent().is_some_and(has_python_marker) {
+                    continue;
+                }
+                let Ok(resolved) = std::fs::canonicalize(path) else {
+                    continue;
+                };
+                if !seen.insert(resolved) {
                     continue;
                 }
                 let label = if is_cache_dir {
@@ -89,13 +102,20 @@ impl Detector for PyTestCachesDetector {
                 } else {
                     format!("{name} ({})", short_parent(path))
                 };
-                if let Some(f) = dir_finding_or_file(
+                if let Some(mut f) = dir_finding_or_file(
                     self.id(),
                     label,
                     path,
                     Safety::Safe,
                     "Test/lint cache; regenerated on next run.",
                 ) {
+                    if is_coverage || super::name_matches(".hypothesis", name) {
+                        f.safety = Safety::Caution;
+                        f.detail =
+                            "Stored test results or examples may be needed to reproduce failures."
+                                .into();
+                        f.action = crate::model::CleanAction::Manual { instructions: format!("Review {} and retain any results or failing examples you need before removing it.", path.display()) };
+                    }
                     out.push(f);
                     if out.len() >= MAX_FINDINGS {
                         break;
@@ -109,10 +129,23 @@ impl Detector for PyTestCachesDetector {
 
 fn name_matches_prefix(prefix: &str, name: &str) -> bool {
     if cfg!(windows) {
-        name.len() >= prefix.len() && name[..prefix.len()].eq_ignore_ascii_case(prefix)
+        name.get(..prefix.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
     } else {
         name.starts_with(prefix)
     }
+}
+
+fn is_coverage_data(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    if crate::scanner::is_link_or_reparse(path) {
+        return false;
+    }
+    let mut header = [0u8; 16];
+    std::fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut header))
+        .is_ok()
+        && &header == b"SQLite format 3\0"
 }
 
 fn has_python_marker(dir: &std::path::Path) -> bool {
@@ -122,9 +155,12 @@ fn has_python_marker(dir: &std::path::Path) -> bool {
     // requirements-dev.txt style names (case-insensitive for Windows).
     std::fs::read_dir(dir).is_ok_and(|entries| {
         entries.filter_map(|e| e.ok()).any(|e| {
+            if !e.file_type().is_ok_and(|t| t.is_file()) {
+                return false;
+            }
             e.file_name().to_str().is_some_and(|n| {
                 let lower = n.to_ascii_lowercase();
-                lower.starts_with("requirements") && lower.ends_with(".txt")
+                lower.starts_with("requirements-") && lower.ends_with(".txt")
             })
         })
     })
@@ -200,9 +236,9 @@ mod tests {
         let proj = ctx.project_roots[0].join("cov");
         fs::create_dir_all(&proj).unwrap();
         fs::write(proj.join("setup.cfg"), "[coverage]").unwrap();
-        fs::write(proj.join(".coverage"), vec![0u8; 11]).unwrap();
+        fs::write(proj.join(".coverage"), b"SQLite format 3\0").unwrap();
         let findings = super::PyTestCachesDetector.scan(&ctx);
         assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].bytes, 11);
+        assert_eq!(findings[0].bytes, 16);
     }
 }
