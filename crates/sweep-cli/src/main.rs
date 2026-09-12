@@ -164,8 +164,7 @@ fn run() -> Result<i32> {
             }
             validate_ids(&id)?;
             let ctx = build_ctx(&roots, no_docker)?;
-            let mut findings = detectors::scan_all(&ctx);
-            retain_ids(&mut findings, &id);
+            let findings = detectors::scan_selected(&ctx, &id);
             let opts = CleanOptions {
                 execute,
                 to_trash: !permanent,
@@ -217,12 +216,6 @@ fn validate_ids(ids: &[String]) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn retain_ids(findings: &mut Vec<sweep_core::Finding>, ids: &[String]) {
-    if !ids.is_empty() {
-        findings.retain(|f| ids.contains(&f.detector_id));
-    }
 }
 
 fn build_ctx(roots: &[PathBuf], no_docker: bool) -> Result<Ctx> {

@@ -1,27 +1,55 @@
-use assert_cmd::Command;
+mod common;
+use common::isolated;
 use predicates::prelude::*;
-use std::{fs, path::Path};
+use std::fs;
 
-fn isolated(root: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("sweep").unwrap();
-    cmd.current_dir(root);
-    for variable in [
-        "LOCALAPPDATA",
-        "CARGO_HOME",
-        "RUSTUP_HOME",
-        "PUB_CACHE",
-        "ANDROID_SDK_ROOT",
-        "ANDROID_HOME",
-        "GRADLE_USER_HOME",
-        "YARN_CACHE_FOLDER",
-        "npm_config_cache",
-        "TEMP",
-        "TMP",
-    ] {
-        cmd.env(variable, root.join("empty-home"));
+#[test]
+fn human_confirmation_executes_only_the_displayed_findings() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+    use std::sync::mpsc;
+    let tmp = tempfile::tempdir().unwrap();
+    fs::write(tmp.path().join("Cargo.toml"), "[workspace]").unwrap();
+    fs::create_dir(tmp.path().join("target")).unwrap();
+    fs::write(tmp.path().join("target/cache"), b"fixture").unwrap();
+    let mut command = common::native(tmp.path());
+    let mut child = command
+        .args([
+            "clean",
+            "--id",
+            "cargo",
+            "--no-docker",
+            "--execute",
+            "--permanent",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let line = line.unwrap();
+            if line.contains("Would remove") {
+                let _ = tx.send(());
+            }
+        }
+    });
+    if rx.recv_timeout(std::time::Duration::from_secs(15)).is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("preview did not appear");
     }
-    cmd.timeout(std::time::Duration::from_secs(15));
-    cmd
+    let added = tmp.path().join("new-project");
+    fs::create_dir_all(added.join("target")).unwrap();
+    fs::write(added.join("Cargo.toml"), "[workspace]").unwrap();
+    fs::write(added.join("target/new-cache"), b"not in the preview").unwrap();
+    child.stdin.take().unwrap().write_all(b"y\n").unwrap();
+    assert!(child.wait().unwrap().success());
+    reader.join().unwrap();
+    assert!(!tmp.path().join("target").exists());
+    assert!(added.join("target/new-cache").exists());
 }
 
 #[test]

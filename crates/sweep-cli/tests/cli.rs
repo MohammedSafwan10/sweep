@@ -1,6 +1,8 @@
 //! CLI integration tests: JSON contract agents rely on.
 
+mod common;
 use assert_cmd::Command;
+use common::isolated;
 use predicates::prelude::*;
 use serde_json::Value;
 use std::fs;
@@ -66,8 +68,8 @@ fn scan_missing_path_fails_with_exit_1() {
 
 #[test]
 fn detectors_json_contract_smoke() {
-    // Machine-dependent (real home dir): only the envelope is asserted.
-    let out = sweep()
+    let tmp = tempfile::tempdir().unwrap();
+    let out = isolated(tmp.path())
         .args(["detectors", "--json", "--no-docker"])
         .assert()
         .success()
@@ -82,15 +84,14 @@ fn detectors_json_contract_smoke() {
 
 #[test]
 fn clean_dry_run_receipt_is_exact_and_deletes_nothing() {
-    // Hermetic: a fake Flutter project under --roots, scoped by --id so no
-    // real-home detector can leak into the assertion.
+    // All global cache locations and the project root are fixture paths.
     let tmp = tempfile::tempdir().unwrap();
     let app = tmp.path().join("myapp");
     fs::create_dir_all(app.join("build")).unwrap();
     fs::write(app.join("pubspec.yaml"), "name: myapp").unwrap();
     fs::write(app.join("build").join("out"), vec![0u8; 1234]).unwrap();
 
-    let out = sweep()
+    let out = isolated(tmp.path())
         .args([
             "clean",
             "--json",
