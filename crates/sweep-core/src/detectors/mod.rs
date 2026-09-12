@@ -5,14 +5,21 @@
 //! directory instead of touching the real machine.
 
 pub mod android;
+pub mod angular;
 pub mod cargo;
 pub mod docker;
+pub mod dotnet;
 pub mod flutter;
 pub mod gradle;
 pub mod jscaches;
 pub mod nextjs;
+pub mod pip_cache;
 pub mod pubcache;
+pub mod pycache;
+pub mod pytest_caches;
 pub mod temp;
+pub mod uv_cache;
+pub mod vite;
 
 use crate::model::{CleanAction, Finding, Safety};
 use crate::scanner::size_of_dir;
@@ -32,6 +39,8 @@ pub struct Ctx {
     pub npm_cache: PathBuf,
     pub pnpm_store: PathBuf,
     pub yarn_cache: PathBuf,
+    pub pip_cache: PathBuf,
+    pub uv_cache: PathBuf,
     pub gradle_home: PathBuf,
     pub temp_dir: PathBuf,
     pub docker_data_files: Vec<PathBuf>,
@@ -69,6 +78,20 @@ impl Ctx {
         let pnpm_store = local_app_data.join("pnpm").join("store");
         let yarn_cache = var_path("YARN_CACHE_FOLDER")
             .unwrap_or_else(|| local_app_data.join("Yarn").join("Cache"));
+        let pip_cache = var_path("PIP_CACHE_DIR").unwrap_or_else(|| {
+            if cfg!(windows) {
+                local_app_data.join("pip").join("Cache")
+            } else {
+                home.join(".cache").join("pip")
+            }
+        });
+        let uv_cache = var_path("UV_CACHE_DIR").unwrap_or_else(|| {
+            if cfg!(windows) {
+                local_app_data.join("uv").join("cache")
+            } else {
+                home.join(".cache").join("uv")
+            }
+        });
         let gradle_home = var_path("GRADLE_USER_HOME").unwrap_or_else(|| home.join(".gradle"));
         let temp_dir = std::env::temp_dir();
         let docker_data_files = vec![
@@ -97,6 +120,8 @@ impl Ctx {
             npm_cache,
             pnpm_store,
             yarn_cache,
+            pip_cache,
+            uv_cache,
             gradle_home,
             temp_dir,
             docker_data_files,
@@ -119,6 +144,8 @@ impl Ctx {
             npm_cache: local.join("npm-cache"),
             pnpm_store: local.join("pnpm").join("store"),
             yarn_cache: local.join("Yarn").join("Cache"),
+            pip_cache: local.join("pip").join("Cache"),
+            uv_cache: local.join("uv").join("cache"),
             gradle_home: root.join(".gradle"),
             temp_dir: root.join("Temp"),
             docker_data_files: vec![local.join("Docker").join("docker_data.vhdx")],
@@ -157,6 +184,21 @@ pub(crate) fn name_matches(known: &str, actual: &str) -> bool {
         known == actual
     }
 }
+
+/// True when a `package.json` manifest lists `dep` in dependencies,
+/// devDependencies or peerDependencies. Broken JSON or missing files
+/// are `false` — never an error.
+pub(crate) fn package_has_dep(manifest: &Path, dep: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(manifest) else {
+        return false;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    ["dependencies", "devDependencies", "peerDependencies"]
+        .iter()
+        .any(|section| json.get(section).and_then(|d| d.get(dep)).is_some())
+}
 /// One detector: one ecosystem's known cache/artifact locations.
 pub trait Detector: Send + Sync {
     fn id(&self) -> &'static str;
@@ -164,12 +206,20 @@ pub trait Detector: Send + Sync {
     fn scan(&self, ctx: &Ctx) -> Vec<Finding>;
 }
 
-/// All v1 detectors in a stable order.
+/// All detectors in a stable order (registry order = display order
+/// before size sorting).
 pub fn all_detectors() -> Vec<Box<dyn Detector>> {
     vec![
         Box::new(cargo::CargoDetector),
         Box::new(pubcache::PubCacheDetector),
         Box::new(jscaches::JsCachesDetector),
+        Box::new(pip_cache::PipCacheDetector),
+        Box::new(uv_cache::UvCacheDetector),
+        Box::new(pycache::PyCacheDetector),
+        Box::new(pytest_caches::PyTestCachesDetector),
+        Box::new(vite::ViteDetector),
+        Box::new(angular::AngularDetector),
+        Box::new(dotnet::DotNetDetector),
         Box::new(gradle::GradleDetector),
         Box::new(android::AndroidDetector),
         Box::new(flutter::FlutterDetector),
@@ -181,8 +231,16 @@ pub fn all_detectors() -> Vec<Box<dyn Detector>> {
 
 /// Run every detector, largest finding first.
 pub fn scan_all(ctx: &Ctx) -> Vec<Finding> {
+    scan_selected(ctx, &[])
+}
+
+/// Scan only requested detector IDs, or every detector when empty.
+pub fn scan_selected(ctx: &Ctx, ids: &[String]) -> Vec<Finding> {
     let mut out = Vec::new();
     for d in all_detectors() {
+        if !ids.is_empty() && !ids.iter().any(|id| id == d.id()) {
+            continue;
+        }
         if d.id() == "docker" && !ctx.docker_enabled {
             continue;
         }

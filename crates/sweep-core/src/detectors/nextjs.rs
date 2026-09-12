@@ -46,18 +46,7 @@ impl Detector for NextJsDetector {
 }
 
 fn depends_on_next(manifest: &std::path::Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(manifest) else {
-        return false;
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return false;
-    };
-    for section in ["dependencies", "devDependencies", "peerDependencies"] {
-        if json.get(section).and_then(|d| d.get("next")).is_some() {
-            return true;
-        }
-    }
-    false
+    super::package_has_dep(manifest, "next")
 }
 
 fn short_name(project: &std::path::Path) -> String {
