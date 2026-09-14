@@ -16,7 +16,7 @@ impl Detector for FlutterDetector {
 
     fn scan(&self, ctx: &Ctx) -> Vec<Finding> {
         let mut out = Vec::new();
-        for project in find_projects(&ctx.project_roots, "pubspec.yaml") {
+        for project in find_projects(ctx, "pubspec.yaml") {
             let name = short_name(&project);
             for (dir, what) in [
                 ("build", "Compiled app output; `flutter clean` equivalent."),

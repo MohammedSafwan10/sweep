@@ -17,7 +17,7 @@ impl Detector for NextJsDetector {
 
     fn scan(&self, ctx: &Ctx) -> Vec<Finding> {
         let mut out = Vec::new();
-        for project in find_projects(&ctx.project_roots, "package.json") {
+        for project in find_projects(ctx, "package.json") {
             if !depends_on_next(&project.join("package.json")) {
                 continue;
             }

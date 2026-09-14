@@ -14,12 +14,16 @@
 | `docker` | Docker Desktop data vhdx size | CAUTION + manual | Never auto-deleted; instructions printed. Volumes may hold DB data. |
 | `temp` | Top-5 entries in `%TEMP%` whose entire readable tree is older than 7 days and at least 1 MiB | CAUTION | Fresh descendants and linked trees are excluded; checked again before deletion. |
 | `pip-cache` | Recognized `http/`, `http-v2/`, `wheels/` under the configured cache | SAFE | Unknown layouts and sibling files are preserved; this is not a full `pip cache purge`. |
-| `uv-cache` | uv cache size | CAUTION + manual | Direct edits unsafe per uv docs; use `uv cache prune`/`clean`. Never auto-deleted. |
+| `uv-cache` | uv cache size | CAUTION + manual | Direct edits unsafe per uv docs; use `uv cache prune`/`clean`. Never auto-deleted. A stale default-location cache left behind by a `UV_CACHE_DIR` redirect is flagged separately (CAUTION, 50 MiB floor). |
 | `pycache` | `__pycache__/` containing only recognized, source-backed `.pyc` files | SAFE | Unknown files, subdirectories, links and missing sources disqualify the directory. Sources are checked again before deletion. |
 | `pytest-caches` | Test/lint caches next to Python markers; SQLite coverage data and Hypothesis examples | SAFE / CAUTION + manual | Coverage data and Hypothesis examples are report-only; unknown `.coverage.*` files are ignored. |
 | `vite-build` | `node_modules/.vite/` in projects depending on `vite` | SAFE | `package.json` parsed; others ignored. |
 | `angular-build` | `.angular/cache/` in projects depending on `@angular/cli`/`core` | SAFE | Other `.angular` contents are preserved. Custom cache paths are not detected. |
 | `dotnet-build` | `bin/`, `obj/` next to `*.csproj`/`*.fsproj`/`*.vbproj` | CAUTION + manual | Never deletes whole output directories: they can contain application data. Solution-only roots are ignored. Review and use `dotnet clean`. |
+| `go-cache` | `GOCACHE` build cache (SAFE) + `GOMODCACHE` module cache (CAUTION) | mixed | Env (`GOCACHE`/`GOMODCACHE`/`GOPATH`) with platform defaults; v1 never runs `go`. |
+| `agent-artifacts` | `.codex/work_artifacts/*` quiet 7+ days + `.codex/sessions` month shards quiet 30+ days (whole-tree freshness, execute-time rechecked) | CAUTION | Task outputs; re-running the task regenerates them. Sub-10 MiB entries ignored. Live tasks never match. |
+| `browser-cache` | Per-profile `Cache`/`Code Cache`/`ShaderCache`/`GPUCache` + browser-level shader dirs (SAFE); per-profile `CacheStorage`/`Service Worker` origin storage + `OptGuideOnDeviceModel` weights (CAUTION), Chrome + Edge | mixed | Origin storage can hold offline app data. Weights are multi-gigabyte re-downloads. Close the browser first; files may be locked. |
+| `windows-update` | `SoftwareDistribution\Download`, `Windows.old` over 50 MiB | CAUTION + manual | Report-only: servicing state belongs to Windows Update/DISM. |
 
 Project-artifact detectors (`cargo`, `flutter-build`, `nextjs-build`,
 `vite-build`, `angular-build`, `dotnet-build`, `pycache`, `pytest-caches`) walk `--roots`

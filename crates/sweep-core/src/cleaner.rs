@@ -34,6 +34,36 @@ pub fn plan(findings: &[Finding], opts: &CleanOptions) -> CleanPlan {
         .iter()
         .map(|finding| action_path(finding).and_then(|path| std::fs::canonicalize(path).ok()))
         .collect();
+    // Ancestors that are themselves eligible for removal in this run.
+    // A filtered-out (e.g. CAUTION under `--only safe`) or non-path finding
+    // must not hide an eligible child: it isn't being deleted, so the child
+    // still needs its own plan entry.
+    let eligible: Vec<PathBuf> = findings
+        .iter()
+        .zip(&resolved)
+        .filter(|(finding, resolved)| {
+            matches!(finding.action, CleanAction::RemovePath { .. })
+                && opts.include.allows(finding.safety)
+                && (finding.safety != crate::model::Safety::Danger || opts.force_danger)
+                && resolved.is_some()
+        })
+        .filter_map(|(_, resolved)| resolved.clone())
+        .collect();
+    // Nested RemovePath findings that will NOT be deleted in this run
+    // (filtered by level, danger-gated, or invalid). A candidate containing
+    // any of these must itself be skipped: deleting it would wipe the
+    // excluded child (e.g. a SAFE parent over a CAUTION child under
+    // `--only safe`). This preserves the safety gate.
+    let withheld: Vec<PathBuf> = findings
+        .iter()
+        .zip(&resolved)
+        .filter_map(|(finding, resolved)| match (&finding.action, resolved) {
+            (CleanAction::RemovePath { .. }, Some(path)) if !eligible.contains(path) => {
+                Some(path.clone())
+            }
+            _ => None,
+        })
+        .collect();
     for finding in findings {
         if !opts.include.allows(finding.safety) {
             items.push(skip(finding, "filtered by --only level"));
@@ -75,12 +105,28 @@ pub fn plan(findings: &[Finding], opts: &CleanOptions) -> CleanPlan {
                         continue;
                     }
                 };
-                if resolved
+                // A parent containing an item excluded from this run cannot
+                // be removed: it would wipe the excluded child. Skip first.
+                if withheld
                     .iter()
-                    .flatten()
-                    .any(|child| child != &path && child.starts_with(&path))
+                    .any(|kept| kept != &path && kept.starts_with(&path))
                 {
-                    items.push(skip(finding, "refused: overlaps a more specific finding"));
+                    items.push(skip(
+                        finding,
+                        "refused: contains an item excluded from this run",
+                    ));
+                    continue;
+                }
+                // Nested findings are covered by the broader delete: removing
+                // the parent removes the children, so plan the parent once
+                // and skip the descendants (bytes counted once, one trash
+                // operation instead of hundreds). Only ancestors that are
+                // themselves eligible in this run count — see `eligible`.
+                if eligible
+                    .iter()
+                    .any(|other| path != *other && path.starts_with(other))
+                {
+                    items.push(skip(finding, "refused: covered by a broader finding"));
                     continue;
                 }
                 if findings.iter().zip(&resolved).any(|(other, resolved)| {
@@ -262,6 +308,16 @@ pub fn execute(plan: &CleanPlan, opts: &CleanOptions) -> CleanReceipt {
         {
             receipt.errors.push(format!(
                 "{}: temp contents changed or could not be verified",
+                path.display()
+            ));
+            continue;
+        }
+        if item.finding.detector_id == "agent-artifacts"
+            && path.exists()
+            && !crate::detectors::agent::is_quiet(&path)
+        {
+            receipt.errors.push(format!(
+                "{}: agent artifact changed recently; a task may be running",
                 path.display()
             ));
             continue;

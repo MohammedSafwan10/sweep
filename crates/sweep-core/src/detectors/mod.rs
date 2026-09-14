@@ -4,12 +4,15 @@
 //! Detectors are pure functions of [`Ctx`] so tests inject a fake home
 //! directory instead of touching the real machine.
 
+pub mod agent;
 pub mod android;
 pub mod angular;
+pub mod browser;
 pub mod cargo;
 pub mod docker;
 pub mod dotnet;
 pub mod flutter;
+pub mod gocache;
 pub mod gradle;
 pub mod jscaches;
 pub mod nextjs;
@@ -20,6 +23,7 @@ pub mod pytest_caches;
 pub mod temp;
 pub mod uv_cache;
 pub mod vite;
+pub mod winupdate;
 
 use crate::model::{CleanAction, Finding, Safety};
 use crate::scanner::size_of_dir;
@@ -43,6 +47,8 @@ pub struct Ctx {
     pub uv_cache: PathBuf,
     pub gradle_home: PathBuf,
     pub temp_dir: PathBuf,
+    pub go_build_cache: PathBuf,
+    pub go_mod_cache: PathBuf,
     pub docker_data_files: Vec<PathBuf>,
     /// Roots walked to find project artifact dirs (target/, build/, ...).
     pub project_roots: Vec<PathBuf>,
@@ -106,6 +112,21 @@ impl Ctx {
         });
         let gradle_home = var_path("GRADLE_USER_HOME").unwrap_or_else(|| home.join(".gradle"));
         let temp_dir = std::env::temp_dir();
+        // Go caches: explicit env wins, else documented platform defaults.
+        // (v1 never runs `go env`; see SAFETY.md.)
+        let go_path = var_path("GOPATH").unwrap_or_else(|| home.join("go"));
+        let go_build_cache = var_path("GOCACHE").unwrap_or_else(|| {
+            if cfg!(windows) {
+                local_app_data.join("go-build")
+            } else {
+                var_path("XDG_CACHE_HOME")
+                    .filter(|p| p.is_absolute())
+                    .unwrap_or_else(|| home.join(".cache"))
+                    .join("go-build")
+            }
+        });
+        let go_mod_cache =
+            var_path("GOMODCACHE").unwrap_or_else(|| go_path.join("pkg").join("mod"));
         let docker_data_files = vec![
             local_app_data
                 .join("Docker")
@@ -136,10 +157,48 @@ impl Ctx {
             uv_cache,
             gradle_home,
             temp_dir,
+            go_build_cache,
+            go_mod_cache,
             docker_data_files,
             project_roots,
             docker_enabled: true,
         }
+    }
+
+    /// Managed cache/runtime trees that never contain user projects.
+    /// Used to prune project-marker walks (which would otherwise descend
+    /// into e.g. `Pub/Cache` fixture dirs and emit false findings).
+    /// Canonicalized for lexical `starts_with` comparison against walk
+    /// paths; entries that fail to canonicalize are skipped (safe
+    /// direction: a missed prune costs speed, never correctness).
+    pub fn managed_roots(&self) -> Vec<PathBuf> {
+        let mut roots = vec![
+            self.local_app_data.clone(),
+            // Whole AppData tree (Local + Roaming): runtimes live in both
+            // (e.g. uv Pythons under Roaming), never user projects.
+            self.home.join("AppData"),
+            self.home.join(".cache"),
+            self.home.join(".codex"),
+            self.cargo_home.clone(),
+            self.rustup_home.clone(),
+            self.pub_cache.clone(),
+            self.npm_cache.clone(),
+            self.pnpm_store.clone(),
+            self.yarn_cache.clone(),
+            self.pip_cache.clone(),
+            self.uv_cache.clone(),
+            self.gradle_home.clone(),
+            self.temp_dir.clone(),
+            self.go_build_cache.clone(),
+            self.go_mod_cache.clone(),
+        ];
+        if let Some(sdk) = &self.android_sdk {
+            roots.push(sdk.clone());
+        }
+        roots
+            .into_iter()
+            .filter_map(|p| std::fs::canonicalize(p).ok())
+            .collect()
     }
 
     /// Point every location under `root` for hermetic tests (and for
@@ -160,6 +219,8 @@ impl Ctx {
             uv_cache: local.join("uv").join("cache"),
             gradle_home: root.join(".gradle"),
             temp_dir: root.join("Temp"),
+            go_build_cache: local.join("go-build"),
+            go_mod_cache: root.join("go").join("pkg").join("mod"),
             docker_data_files: vec![local.join("Docker").join("docker_data.vhdx")],
             project_roots: vec![root.join("projects")],
             docker_enabled: true,
@@ -241,8 +302,12 @@ pub fn all_detectors() -> Vec<Box<dyn Detector>> {
         Box::new(android::AndroidDetector),
         Box::new(flutter::FlutterDetector),
         Box::new(nextjs::NextJsDetector),
+        Box::new(gocache::GoCacheDetector),
+        Box::new(agent::AgentArtifactsDetector),
+        Box::new(browser::BrowserCacheDetector),
         Box::new(docker::DockerDetector),
         Box::new(temp::TempDetector),
+        Box::new(winupdate::WindowsUpdateDetector),
     ]
 }
 
@@ -252,18 +317,28 @@ pub fn scan_all(ctx: &Ctx) -> Vec<Finding> {
 }
 
 /// Scan only requested detector IDs, or every detector when empty.
+///
+/// Detectors run in parallel (rayon): each detector is independent and
+/// mostly I/O-bound, so 16 sequential walks become ~1 concurrent batch.
+/// Results are re-sorted largest-first for stable output.
 pub fn scan_selected(ctx: &Ctx, ids: &[String]) -> Vec<Finding> {
-    let mut out = Vec::new();
-    for d in all_detectors() {
-        if !ids.is_empty() && !ids.iter().any(|id| id == d.id()) {
-            continue;
-        }
-        if d.id() == "docker" && !ctx.docker_enabled {
-            continue;
-        }
-        out.extend(d.scan(ctx));
-    }
-    out.sort_by_key(|f| std::cmp::Reverse(f.bytes));
+    use rayon::prelude::*;
+    let mut out: Vec<Finding> = all_detectors()
+        .into_par_iter()
+        .filter(|d| {
+            (ids.is_empty() || ids.iter().any(|id| id == d.id()))
+                && (d.id() != "docker" || ctx.docker_enabled)
+        })
+        .flat_map(|d| d.scan(ctx))
+        .collect();
+    // Stable order: largest first, id+label tiebreak for determinism
+    // across runs and thread schedules.
+    out.sort_by(|a, b| {
+        b.bytes
+            .cmp(&a.bytes)
+            .then(a.detector_id.cmp(&b.detector_id))
+            .then(a.label.cmp(&b.label))
+    });
     out
 }
 
@@ -295,10 +370,20 @@ pub(crate) fn dir_finding(
     })
 }
 
-/// Walk `roots` for project markers (e.g. `pubspec.yaml`), returning the
-/// directories that contain one. Artifact/output dirs are pruned from the
-/// walk so scanning stays fast. Capped at 500 projects.
-pub(crate) fn find_projects(roots: &[PathBuf], marker: &str) -> Vec<PathBuf> {
+/// Walk the context's project roots for marker files (e.g. `pubspec.yaml`),
+/// returning the directories that contain one. Artifact/output dirs are
+/// pruned by name; managed cache trees (package caches, runtimes, SDKs)
+/// are pruned by anchored path prefix from [`Ctx::managed_roots`].
+/// Prefix (not name) matching avoids false negatives: a real user project
+/// under `…/Android/myapp` or `…/uv/myapp` is still found. Capped at 500
+/// projects.
+///
+/// Prefix pruning matters: package caches ship test fixtures containing
+/// markers (e.g. `Pub/Cache/hosted/.../build_runner-*/test/fixtures/
+/// flutter_pkg/pubspec.yaml`) that are not user projects. Walking them
+/// wastes minutes and emits false findings that overlap (and hide) the
+/// real parent cache finding.
+pub(crate) fn find_projects(ctx: &Ctx, marker: &str) -> Vec<PathBuf> {
     const SKIP: &[&str] = &[
         "build",
         ".dart_tool",
@@ -314,13 +399,23 @@ pub(crate) fn find_projects(roots: &[PathBuf], marker: &str) -> Vec<PathBuf> {
         "venv",
         "__pycache__",
     ];
+    let managed: std::sync::Arc<Vec<PathBuf>> = std::sync::Arc::new(ctx.managed_roots());
     let mut projects = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for root in roots {
+    for root in &ctx.project_roots {
         if !root.is_dir() || projects.len() >= 500 {
             continue;
         }
-        let walker = WalkBuilder::new(root)
+        // Canonicalize the walk root so prefix comparison uses the same
+        // lexical form as the canonicalized managed roots. The root itself
+        // is always honored; managed children are pruned — unless the root
+        // itself sits inside a managed tree (explicit `--roots`/CWD scope,
+        // including tempdirs in tests), in which case prefix pruning is
+        // disabled for that walk and only name/links prune.
+        let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.clone());
+        let outside = !managed.iter().any(|m| root.starts_with(m));
+        let managed = std::sync::Arc::clone(&managed);
+        let walker = WalkBuilder::new(&root)
             .hidden(false)
             .git_ignore(false)
             .ignore(false)
@@ -328,8 +423,11 @@ pub(crate) fn find_projects(roots: &[PathBuf], marker: &str) -> Vec<PathBuf> {
             .git_global(false)
             .parents(false)
             .follow_links(false)
-            .filter_entry(|e| {
+            .filter_entry(move |e| {
                 if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    if outside && managed.iter().any(|m| e.path().starts_with(m)) {
+                        return false;
+                    }
                     if let Some(name) = e.file_name().to_str() {
                         if SKIP.iter().any(|s| name_matches(s, name)) {
                             return false;

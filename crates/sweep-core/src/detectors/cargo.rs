@@ -36,7 +36,7 @@ impl Detector for CargoDetector {
                 out.push(f);
             }
         }
-        for project in find_projects(&ctx.project_roots, "Cargo.toml") {
+        for project in find_projects(ctx, "Cargo.toml") {
             let target = project.join("target");
             if let Some(f) = dir_finding(
                 self.id(),

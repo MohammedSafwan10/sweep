@@ -18,7 +18,7 @@ impl Detector for ViteDetector {
 
     fn scan(&self, ctx: &Ctx) -> Vec<Finding> {
         let mut out = Vec::new();
-        for project in find_projects(&ctx.project_roots, "package.json") {
+        for project in find_projects(ctx, "package.json") {
             if !super::package_has_dep(&project.join("package.json"), "vite") {
                 continue;
             }

@@ -23,12 +23,14 @@ impl Detector for DotNetDetector {
     fn scan(&self, ctx: &Ctx) -> Vec<Finding> {
         let mut out = Vec::new();
         let mut seen = std::collections::HashSet::new();
+        let managed: std::sync::Arc<Vec<std::path::PathBuf>> =
+            std::sync::Arc::new(ctx.managed_roots());
         for root in &ctx.project_roots {
             if !root.is_dir() || out.len() >= MAX_FINDINGS {
                 continue;
             }
             // Manifest dirs first; bin/obj lookups are then O(1) each.
-            for project_dir in find_manifest_dirs(root) {
+            for project_dir in find_manifest_dirs(root, &managed) {
                 let Ok(project_dir) = std::fs::canonicalize(project_dir) else {
                     continue;
                 };
@@ -73,11 +75,19 @@ fn is_manifest(name: &std::ffi::OsStr) -> bool {
     })
 }
 
-fn find_manifest_dirs(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+fn find_manifest_dirs(
+    root: &std::path::Path,
+    managed: &std::sync::Arc<Vec<std::path::PathBuf>>,
+) -> Vec<std::path::PathBuf> {
     use std::collections::HashSet;
     let mut dirs = Vec::new();
     let mut seen = HashSet::new();
-    let walker = WalkBuilder::new(root)
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    // The root itself is always honored; managed children are pruned —
+    // unless the root sits inside a managed tree (explicit scope).
+    let outside = !managed.iter().any(|m| root.starts_with(m));
+    let managed = std::sync::Arc::clone(managed);
+    let walker = WalkBuilder::new(&root)
         .hidden(false)
         .git_ignore(false)
         .ignore(false)
@@ -85,8 +95,11 @@ fn find_manifest_dirs(root: &std::path::Path) -> Vec<std::path::PathBuf> {
         .git_global(false)
         .parents(false)
         .follow_links(false)
-        .filter_entry(|e| {
+        .filter_entry(move |e| {
             if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                if outside && managed.iter().any(|m| e.path().starts_with(m)) {
+                    return false;
+                }
                 if let Some(name) = e.file_name().to_str() {
                     const SKIP: &[&str] = &[
                         ".git",

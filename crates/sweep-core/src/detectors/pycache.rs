@@ -24,11 +24,18 @@ impl Detector for PyCacheDetector {
     fn scan(&self, ctx: &Ctx) -> Vec<Finding> {
         let mut out = Vec::new();
         let mut seen = std::collections::HashSet::new();
+        let managed: std::sync::Arc<Vec<std::path::PathBuf>> =
+            std::sync::Arc::new(ctx.managed_roots());
         for root in &ctx.project_roots {
             if !root.is_dir() || out.len() >= MAX_FINDINGS {
                 continue;
             }
-            let walker = WalkBuilder::new(root)
+            let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.clone());
+            // The root itself is always honored; managed children are
+            // pruned — unless the root sits inside a managed tree.
+            let outside = !managed.iter().any(|m| root.starts_with(m));
+            let managed = std::sync::Arc::clone(&managed);
+            let walker = WalkBuilder::new(&root)
                 .hidden(false)
                 .git_ignore(false)
                 .ignore(false)
@@ -36,8 +43,13 @@ impl Detector for PyCacheDetector {
                 .git_global(false)
                 .parents(false)
                 .follow_links(false)
-                .filter_entry(|e| {
+                .filter_entry(move |e| {
                     if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                        // Managed runtimes (e.g. agent private pythons) are
+                        // not user caches: skip, don't touch live tooling.
+                        if outside && managed.iter().any(|m| e.path().starts_with(m)) {
+                            return false;
+                        }
                         if e.path().join("pyvenv.cfg").is_file() {
                             return false;
                         }

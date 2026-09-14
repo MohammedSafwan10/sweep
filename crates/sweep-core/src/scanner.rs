@@ -328,15 +328,29 @@ pub fn scan_dir(
     })
 }
 
-/// Byte size of one directory subtree (single-threaded; for detectors).
+/// Byte size of one directory subtree (parallel; for detectors).
 /// Symlinks are skipped. Returns bytes + file count.
+///
+/// Canonicalizes first so Windows `\\?\` long-path resolution applies:
+/// raw paths silently fail on >260-char entries (e.g. uv's hash cache),
+/// which undercounts by gigabytes. One worker per core with atomic
+/// totals — a single Relaxed add per file is ~ns vs ~µs of I/O.
+///
+/// Inner parallelism is capped at 2 threads: detectors already run in
+/// parallel via rayon, so uncapped inner pools oversubscribe (16 detectors
+/// × N walkers) and thrash the disk. Best-effort sizing: unreadable
+/// entries are skipped silently (conservative undercount, never over).
 pub fn size_of_dir(path: &Path) -> (u64, u64) {
     if is_link_or_reparse(path) {
         return (0, 0);
     }
-    let mut bytes: u64 = 0;
-    let mut files: u64 = 0;
-    let walker = WalkBuilder::new(path)
+    // Long-path fix: canonicalize for the verbatim prefix. Fall back to
+    // the raw path when canonicalization fails (dir may vanish mid-scan).
+    let root: PathBuf = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let bytes = Arc::new(AtomicU64::new(0));
+    let files = Arc::new(AtomicU64::new(0));
+    let mut builder = WalkBuilder::new(&root);
+    builder
         .hidden(false)
         .git_ignore(false)
         .ignore(false)
@@ -344,23 +358,30 @@ pub fn size_of_dir(path: &Path) -> (u64, u64) {
         .git_global(false)
         .parents(false)
         .follow_links(false)
-        .filter_entry(|entry| !is_link_or_reparse(entry.path()))
-        .build();
-    for entry in walker {
-        let Ok(entry) = entry else { continue };
-        if entry.path_is_symlink() {
-            continue;
-        }
-        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        if is_dir && is_link_or_reparse(entry.path()) {
-            continue;
-        }
-        if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-            files += 1;
-            bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
-        }
-    }
-    (bytes, files)
+        .threads(2)
+        .filter_entry(|entry| !is_link_or_reparse(entry.path()));
+    builder.build_parallel().run(|| {
+        let bytes = Arc::clone(&bytes);
+        let files = Arc::clone(&files);
+        Box::new(move |entry: Result<ignore::DirEntry, ignore::Error>| {
+            let Ok(entry) = entry else {
+                return WalkState::Continue;
+            };
+            if entry.path_is_symlink() {
+                return WalkState::Continue;
+            }
+            if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                if let Ok(meta) = entry.metadata() {
+                    if !metadata_is_link_or_reparse(&meta) {
+                        files.fetch_add(1, Ordering::Relaxed);
+                        bytes.fetch_add(meta.len(), Ordering::Relaxed);
+                    }
+                }
+            }
+            WalkState::Continue
+        })
+    });
+    (bytes.load(Ordering::Relaxed), files.load(Ordering::Relaxed))
 }
 
 /// Parse human sizes: `512`, `10KB`, `1.5 MB`, `2GiB` (case-insensitive).

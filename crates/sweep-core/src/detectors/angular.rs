@@ -18,7 +18,7 @@ impl Detector for AngularDetector {
 
     fn scan(&self, ctx: &Ctx) -> Vec<Finding> {
         let mut out = Vec::new();
-        for project in find_projects(&ctx.project_roots, "package.json") {
+        for project in find_projects(ctx, "package.json") {
             let manifest = project.join("package.json");
             if !super::package_has_dep(&manifest, "@angular/cli")
                 && !super::package_has_dep(&manifest, "@angular/core")
