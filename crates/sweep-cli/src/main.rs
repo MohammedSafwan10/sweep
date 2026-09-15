@@ -191,8 +191,24 @@ fn run() -> Result<i32> {
                 println!("Aborted. Nothing deleted.");
                 return Ok(0);
             }
-            let receipt = cleaner::execute(&plan, &opts);
+            let started = std::time::Instant::now();
+            let (tx, rx) = std::sync::mpsc::sync_channel::<cleaner::CleanProgress>(64);
+            let printer = std::thread::spawn(move || {
+                while let Ok(ev) = rx.recv() {
+                    eprintln!(
+                        "  [{:>3}/{}] {:>10}  {}{}",
+                        ev.done,
+                        ev.total,
+                        format_bytes(ev.bytes),
+                        if ev.ok { "" } else { "FAILED  " },
+                        ev.label
+                    );
+                }
+            });
+            let receipt = cleaner::execute_with_progress(&plan, &opts, Some(tx));
+            let _ = printer.join();
             print_receipt_human(&receipt, &opts);
+            eprintln!("Elapsed: {:.1}s", started.elapsed().as_secs_f64());
             Ok(if receipt.errors.is_empty() { 0 } else { 2 })
         }
     }

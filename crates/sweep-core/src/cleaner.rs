@@ -235,6 +235,46 @@ fn skip(finding: &Finding, reason: &str) -> PlannedItem {
 /// The delete method comes from the plan's recorded `via`, never from a
 /// second options struct, so a plan can't silently change meaning.
 pub fn execute(plan: &CleanPlan, opts: &CleanOptions) -> CleanReceipt {
+    execute_with_progress(plan, opts, None)
+}
+
+/// Progress event for one processed plan item (the human CLI prints these
+/// live; agents ignore them and read the final receipt).
+#[derive(Debug, Clone)]
+pub struct CleanProgress {
+    pub done: usize,
+    pub total: usize,
+    pub bytes: u64,
+    pub label: String,
+    pub ok: bool,
+}
+
+/// A validated deletion collected in phase 1, ready for phase 2.
+struct Job {
+    path: PathBuf,
+    is_dir: bool,
+    via: String,
+    bytes: u64,
+    label: String,
+    safety: crate::model::Safety,
+}
+
+/// Execute with optional per-item progress notifications.
+///
+/// Phase 1 validates every plan item cheaply (safety gates, ancestor
+/// links, vanished paths, detector rechecks) and collects deletion jobs.
+/// Phase 2 performs the destructive calls. Permanent plans run jobs in
+/// parallel via rayon and each directory job uses a parallel one-pass
+/// deleter ([`delete_tree`]) that counts bytes while unlinking — raw
+/// `std::fs` primitives, no shell file-operation APIs, no separate sizing
+/// walk. Trash plans stay sequential because the platform trash is a
+/// shell service (COM `IFileOperation` on Windows). Receipts keep plan
+/// order.
+pub fn execute_with_progress(
+    plan: &CleanPlan,
+    opts: &CleanOptions,
+    progress: Option<std::sync::mpsc::SyncSender<CleanProgress>>,
+) -> CleanReceipt {
     let mut receipt = CleanReceipt {
         schema_version: SCHEMA_VERSION,
         dry_run: !opts.execute,
@@ -243,6 +283,7 @@ pub fn execute(plan: &CleanPlan, opts: &CleanOptions) -> CleanReceipt {
         skipped: Vec::new(),
         errors: Vec::new(),
     };
+    let mut jobs: Vec<Job> = Vec::new();
     for item in &plan.items {
         let Disposition::Remove { via } = &item.disposition else {
             if let Disposition::Skipped { reason } = &item.disposition {
@@ -322,10 +363,11 @@ pub fn execute(plan: &CleanPlan, opts: &CleanOptions) -> CleanReceipt {
             ));
             continue;
         }
-        // Re-validate at delete time: refuse links (swapped after planning)
-        // and re-stat directories properly (dir metadata len is NOT the
-        // subtree size — that undercounted receipts before).
-        let (is_dir, bytes_now) = match std::fs::symlink_metadata(&path) {
+        // Re-validate type at delete time (a swapped symlink must never be
+        // deleted through). Sizing is deliberately NOT done here: it runs
+        // inside the phase-2 job so it overlaps with other jobs' deletes
+        // instead of adding a sequential walk per item.
+        let is_dir = match std::fs::symlink_metadata(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 receipt.skipped.push(SkippedItem {
                     label: item.finding.label.clone(),
@@ -350,36 +392,119 @@ pub fn execute(plan: &CleanPlan, opts: &CleanOptions) -> CleanReceipt {
                 ));
                 continue;
             }
-            Ok(meta) => (
-                meta.is_dir(),
-                if meta.is_dir() {
-                    crate::scanner::size_of_dir(&path).0
-                } else {
-                    meta.len()
-                },
-            ),
+            Ok(meta) => meta.is_dir(),
         };
-        let result = delete_path(&path, is_dir, via == "trash");
-        match result {
-            Ok(()) => {
-                receipt.freed_bytes += bytes_now;
-                receipt.removed.push(RemovedItem {
-                    path,
-                    bytes: bytes_now,
-                    via: via.clone(),
-                    safety: item.finding.safety,
+        jobs.push(Job {
+            path,
+            is_dir,
+            via: via.clone(),
+            bytes: item.finding.bytes,
+            label: item.finding.label.clone(),
+            safety: item.finding.safety,
+        });
+    }
+    // Phase 2: destructive calls. Each job re-stats its tree right before
+    // deleting (drift guard + honest receipt) and permanent plans run jobs
+    // in parallel: independent tree roots delete concurrently, so the
+    // re-stat walk overlaps with other jobs' deletes instead of adding a
+    // full sequential pre-pass (the v0.1.0 behaviour that made multi-GB
+    // cleanups crawl: walk everything, then delete everything, one item at
+    // a time). Trash plans stay sequential — the platform trash is a shell
+    // service (COM IFileOperation on Windows).
+    if opts.execute && !jobs.is_empty() {
+        let total = jobs.len();
+        let done = std::sync::atomic::AtomicUsize::new(0);
+        let run = |job: &Job| -> (Result<RemovedItem, String>, Vec<String>) {
+            let mut warnings: Vec<String> = Vec::new();
+            let outcome: Result<u64, String> = if job.via == "trash" {
+                // Trash keeps a pre-walk: the OS moves the tree (no per-file
+                // callback), so the walk is the only way to size the receipt.
+                let bytes_now = if job.is_dir {
+                    crate::scanner::size_of_dir(&job.path).0
+                } else {
+                    std::fs::symlink_metadata(&job.path)
+                        .map(|m| m.len())
+                        .unwrap_or(job.bytes)
+                };
+                delete_path(&job.path, job.is_dir, true).map(|()| bytes_now)
+            } else if job.is_dir {
+                // Parallel one-pass delete: bytes counted while unlinking.
+                let (bytes, mut errs) = delete_tree(&job.path);
+                if job.path.exists() {
+                    let detail = if errs.is_empty() {
+                        "tree still exists after deletion".to_string()
+                    } else {
+                        errs.join("; ")
+                    };
+                    Err(detail)
+                } else {
+                    // Locked children are reported, but the item is done.
+                    warnings.append(&mut errs);
+                    Ok(bytes)
+                }
+            } else {
+                let len = std::fs::symlink_metadata(&job.path)
+                    .map(|m| m.len())
+                    .unwrap_or(job.bytes);
+                delete_path(&job.path, false, false).map(|()| len)
+            };
+            let ok = outcome.is_ok();
+            let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            if let Some(tx) = &progress {
+                let _ = tx.try_send(CleanProgress {
+                    done: n,
+                    total,
+                    bytes: outcome.as_ref().copied().unwrap_or(0),
+                    label: job.label.clone(),
+                    ok,
                 });
             }
-            Err(e) => {
-                receipt
-                    .errors
-                    .push(format!("{} ({}): {e}", item.finding.label, path.display()))
+            match outcome {
+                Ok(bytes_now) => (
+                    Ok(RemovedItem {
+                        path: job.path.clone(),
+                        bytes: bytes_now,
+                        via: job.via.clone(),
+                        safety: job.safety,
+                    }),
+                    warnings,
+                ),
+                Err(e) => (
+                    Err(format!("{} ({}): {e}", job.label, job.path.display())),
+                    warnings,
+                ),
+            }
+        };
+        if jobs.iter().any(|j| j.via == "trash") {
+            for job in &jobs {
+                let (result, mut warnings) = run(job);
+                receipt.errors.append(&mut warnings);
+                match result {
+                    Ok(removed) => {
+                        receipt.freed_bytes += removed.bytes;
+                        receipt.removed.push(removed);
+                    }
+                    Err(e) => receipt.errors.push(e),
+                }
+            }
+        } else {
+            use rayon::prelude::*;
+            let results: Vec<(Result<RemovedItem, String>, Vec<String>)> =
+                jobs.par_iter().map(run).collect();
+            for (result, mut warnings) in results {
+                receipt.errors.append(&mut warnings);
+                match result {
+                    Ok(removed) => {
+                        receipt.freed_bytes += removed.bytes;
+                        receipt.removed.push(removed);
+                    }
+                    Err(e) => receipt.errors.push(e),
+                }
             }
         }
     }
     receipt
 }
-
 fn delete_path(path: &Path, is_dir: bool, to_trash: bool) -> Result<(), String> {
     if to_trash {
         return trash::delete(path).map_err(|e| e.to_string());
@@ -396,6 +521,120 @@ fn delete_path(path: &Path, is_dir: bool, to_trash: bool) -> Result<(), String> 
         let _ = std::fs::set_permissions(path, perms);
     }
     std::fs::remove_file(path).map_err(|e| e.to_string())
+}
+
+/// Delete one directory tree in a single parallel pass, returning the
+/// bytes of files actually removed plus non-fatal errors (locked files
+/// leave their siblings deleted).
+///
+/// Why this shape (see docs/SAFETY.md):
+/// - Raw `std::fs` primitives only. Benchmarks of mass deletion on
+///   Windows rank plain unlink loops (what `std::filesystem`/`del /f/s/q`
+///   do) well ahead of shell APIs: `IFileOperation` ~2x slower and
+///   `SHFileOperation` >7x slower for many small files.
+/// - Subdirectories (and wide file batches) are processed in parallel via
+///   rayon — the same trick that makes `robocopy /MT` the fastest mass
+///   file tool on Windows. With NVMe the bottleneck is per-unlink
+///   latency, not bandwidth, so concurrent subtrees scale.
+/// - One pass total: bytes are accumulated while deleting, so there is no
+///   separate sizing walk before the delete.
+/// - Links and reparse points are never followed: the link itself is
+///   removed, its target is untouched.
+/// - Read-only attributes are cleared before unlinking (same behaviour
+///   the old remove_dir_all path provided).
+fn delete_tree(root: &Path) -> (u64, Vec<String>) {
+    use rayon::prelude::*;
+    let mut bytes = 0u64;
+    let mut errors = Vec::new();
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(e) => return (0, vec![format!("cannot list {}: {e}", root.display())]),
+    };
+    let mut files: Vec<(PathBuf, u64)> = Vec::new();
+    let mut subdirs: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                errors.push(format!("{}: {e}", root.display()));
+                continue;
+            }
+        };
+        let path = entry.path();
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(e) => {
+                errors.push(format!("{}: {e}", path.display()));
+                continue;
+            }
+        };
+        if meta.file_type().is_symlink() || crate::scanner::metadata_is_link_or_reparse(&meta) {
+            // Remove the link itself; never descend into the target.
+            let result = if meta.is_dir() {
+                std::fs::remove_dir(&path)
+            } else {
+                std::fs::remove_file(&path)
+            };
+            if let Err(e) = result {
+                errors.push(format!("{}: {e}", path.display()));
+            }
+        } else if meta.is_dir() {
+            subdirs.push(path);
+        } else if meta.is_file() {
+            files.push((path, meta.len()));
+        } else if let Err(e) = std::fs::remove_file(&path) {
+            // Unknown types (sockets, devices): best-effort unlink.
+            errors.push(format!("{}: {e}", path.display()));
+        }
+    }
+    // Wide leaf dirs unlink in parallel; narrow ones stay serial to avoid
+    // task overhead. Threshold chosen from cache-dir shapes (hundreds of
+    // files per leaf on average).
+    let file_results: Vec<Result<u64, String>> = if files.len() >= 32 {
+        files
+            .par_iter()
+            .map(|(p, len)| unlink_file(p, *len))
+            .collect()
+    } else {
+        files.iter().map(|(p, len)| unlink_file(p, *len)).collect()
+    };
+    for result in file_results {
+        match result {
+            Ok(len) => bytes += len,
+            Err(e) => errors.push(e),
+        }
+    }
+    let sub_results: Vec<(u64, Vec<String>)> =
+        subdirs.par_iter().map(|dir| delete_tree(dir)).collect();
+    for (sub_bytes, mut sub_errors) in sub_results {
+        bytes += sub_bytes;
+        errors.append(&mut sub_errors);
+    }
+    if let Ok(meta) = std::fs::symlink_metadata(root) {
+        let mut perms = meta.permissions();
+        if perms.readonly() {
+            make_writable(&mut perms);
+            let _ = std::fs::set_permissions(root, perms);
+        }
+    }
+    if let Err(e) = std::fs::remove_dir(root) {
+        errors.push(format!("cannot remove {}: {e}", root.display()));
+    }
+    (bytes, errors)
+}
+
+/// Unlink one file, clearing read-only first. Returns bytes on success.
+fn unlink_file(path: &Path, len: u64) -> Result<u64, String> {
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        let mut perms = meta.permissions();
+        if perms.readonly() {
+            make_writable(&mut perms);
+            let _ = std::fs::set_permissions(path, perms);
+        }
+    }
+    std::fs::remove_file(path)
+        .map(|()| len)
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Add owner-write without clobbering other bits. (`set_readonly(false)`
@@ -476,7 +715,7 @@ mod tests {
         let target = tmp.path().join("junk");
         fs::create_dir_all(&target).unwrap();
         fs::write(target.join("f"), vec![0u8; 50]).unwrap();
-        // Lie in the finding: receipt must report re-statted bytes (50), not 7.
+        // Lie in the finding: receipt must report real bytes (50), not 7.
         let findings = vec![finding("junk", &target, 7, Safety::Safe)];
         let receipt = clean(&findings, &opts());
         assert!(!receipt.dry_run);
@@ -485,6 +724,48 @@ mod tests {
         assert_eq!(receipt.removed[0].via, "permanent");
         assert_eq!(receipt.freed_bytes, 50);
         assert!(receipt.errors.is_empty());
+    }
+
+    #[test]
+    fn parallel_delete_removes_nested_tree_and_counts_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("tree");
+        fs::create_dir_all(root.join("a").join("b")).unwrap();
+        fs::create_dir_all(root.join("c")).unwrap();
+        fs::write(root.join("f1"), vec![0u8; 10]).unwrap();
+        fs::write(root.join("a").join("f2"), vec![0u8; 20]).unwrap();
+        fs::write(root.join("a").join("b").join("f3"), vec![0u8; 30]).unwrap();
+        fs::write(root.join("c").join("f4"), vec![0u8; 40]).unwrap();
+        let findings = vec![finding("tree", &root, 0, Safety::Safe)];
+        let receipt = clean(&findings, &opts());
+        assert!(!root.exists());
+        assert!(receipt.errors.is_empty(), "{:?}", receipt.errors);
+        assert_eq!(receipt.freed_bytes, 100);
+        assert_eq!(receipt.removed.len(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parallel_delete_continues_past_locked_file() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("tree");
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("locked.bin"), vec![0u8; 8]).unwrap();
+        fs::write(root.join("sub").join("free.bin"), vec![0u8; 16]).unwrap();
+        let handle = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(root.join("locked.bin"))
+            .unwrap();
+        let findings = vec![finding("tree", &root, 0, Safety::Safe)];
+        let receipt = clean(&findings, &opts());
+        // Free sibling deleted; the locked file blocks only its own entry.
+        assert!(!root.join("sub").exists());
+        assert!(root.join("locked.bin").exists());
+        assert!(!receipt.errors.is_empty());
+        assert!(receipt.removed.is_empty());
+        drop(handle);
     }
 
     #[test]
