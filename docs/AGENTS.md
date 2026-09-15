@@ -84,6 +84,14 @@ they may carry the `\\?\` verbatim prefix. Compare with canonicalization
 (or suffix-match), never raw string equality. Human terminal output shows
 the stripped display form instead.
 
+`freed_bytes` counts logical bytes actually deleted: permanent runs
+accumulate sizes while unlinking, so an item that fails (locked file)
+surfaces in `errors[]` and its bytes are **not** counted; trash runs
+measure before handing the tree to the OS. `removed[]` lists every item
+that fully succeeded — `sum(removed[].bytes) == freed_bytes` on runs
+without partial failures. Interactive `--execute` runs print per-item
+progress to **stderr**; `--json` output on stdout stays pure.
+
 ## Recommended agent flow
 
 ```sh

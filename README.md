@@ -10,12 +10,13 @@ PowerShell took **3+ minutes and timed out** scanning one folder. `sweep` does t
 ```text
 > sweep detectors
 
-Reclaimable: 8.1 GiB across 30 items
+Detected: 48.2 GiB logical bytes across 241 items
 
-   2.1 GiB  [CAUTION]  android ndk/28.2.13676358
- 983.6 MiB  [SAFE  ]  cargo target/ (myapp)
- 553.9 MiB  [SAFE  ]  pnpm store
- ...
+   7.5 GiB  [SAFE   ]  gradle version cache (9.1.0)
+   6.5 GiB  [SAFE   ]  npm cache
+   4.9 GiB  [CAUTION]  agent task output (noor_flutter_build)
+   4.0 GiB  [CAUTION]  chrome on-device model
+   ...
 Run `sweep clean` for a dry-run plan, `sweep clean --execute` to act.
 ```
 
@@ -26,8 +27,7 @@ cargo install --git https://github.com/MohammedSafwan10/sweep
 ```
 
 No Rust? Download `sweep.exe` from [Releases](https://github.com/MohammedSafwan10/sweep/releases)
-(v0.1.0 and newer) and run it in a terminal — no install needed.
-winget / scoop packages are on the roadmap.
+and run it in a terminal — no install needed. winget / scoop packages are on the roadmap.
 
 ## Usage
 
@@ -36,6 +36,7 @@ sweep scan <PATH> [--top 30] [--min-size 1MB]   # what's big under PATH
 sweep detectors [--roots DIR...]                # known caches + build junk
 sweep clean                                     # dry-run plan (default: safe items, to trash)
 sweep clean --execute                           # ask, then delete to Recycle Bin
+sweep clean --execute --permanent               # skip the bin for regenerable build output
 sweep clean --execute --only caution --yes      # include caution items, no prompt
 ```
 
@@ -55,12 +56,18 @@ Details: [docs/SAFETY.md](docs/SAFETY.md) · detectors: [docs/DETECTORS.md](docs
 
 `sweep` is built to be driven by agents (OpenCode, etc.): stable `--json` schemas, exit codes, and a strict opt-in model for destructive actions. Contract: [docs/AGENTS.md](docs/AGENTS.md).
 
+## Performance
+
+- **Parallel scanner** — one worker per core with thread-local aggregation: ~2M files in seconds.
+- **Parallel one-pass deleter** — raw filesystem unlinks across independent subtrees, sizes counted while deleting: a 30k-file tree deletes in ~1.5s (v0.1.0 took 56s on the same fixture).
+- **Parallel detectors** — the full registry scans concurrently; project walks prune managed cache trees instead of descending into them.
+
 ## Roadmap
 
 - [x] M1 — parallel scanner + CLI (+ `--json`)
-- [x] M2 — 16-detector registry (Rust, Dart, JS, Python, .NET, Gradle, Android, Docker…)
+- [x] M2 — 20-detector registry (Rust, Dart, JS, TS, Python, Go, .NET, Gradle, Android, Docker, AI-agent artifacts, browser caches…)
 - [x] M3 — safe cleaner (trash-first, receipts)
-- [x] M5 (part 1) — v0.1.0 released with Windows exe
+- [x] M5 (part 1) — v0.2.0 released with Windows exe + parallel one-pass deleter
 - [ ] M4 — interactive TUI (`ratatui`)
 - [ ] M5 (part 2) — winget/scoop, signed Windows builds
 
