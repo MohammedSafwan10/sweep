@@ -8,6 +8,7 @@ description = "Scanning, detection and cleaning engine for sweep"
 repository.workspace = true
 
 [dependencies]
+fs4 = { version = "0.13", features = ["sync"] }
 ignore = "0.4"
 rayon = "1"
 serde = { version = "1", features = ["derive"] }

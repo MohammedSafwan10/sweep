@@ -14,7 +14,7 @@
 | `docker` | Docker Desktop data vhdx size | CAUTION + manual | Never auto-deleted; instructions printed. Volumes may hold DB data. |
 | `temp` | Top-5 entries in `%TEMP%` whose entire readable tree is older than 7 days and at least 1 MiB | CAUTION | Fresh descendants and linked trees are excluded; checked again before deletion. |
 | `pip-cache` | Recognized `http/`, `http-v2/`, `wheels/` under the configured cache | SAFE | Unknown layouts and sibling files are preserved; this is not a full `pip cache purge`. |
-| `uv-cache` | uv cache size | CAUTION + manual | Direct edits unsafe per uv docs; use `uv cache prune`/`clean`. Never auto-deleted. A stale default-location cache left behind by a `UV_CACHE_DIR` redirect is flagged separately (CAUTION, 50 MiB floor). |
+| `uv-cache` | uv cache size | CAUTION + manual | Direct edits unsafe per uv docs; use `uv cache prune`/`clean`. Never auto-deleted. Live lock state is surfaced: `uvx` tools/MCP servers hold the lock for their lifetime, so the finding says "in use" instead of letting uv sit 300s. A redirected default-location cache is flagged as stale only when nothing holds its lock (CAUTION, 50 MiB floor). |
 | `pycache` | `__pycache__/` containing only recognized, source-backed `.pyc` files | SAFE | Unknown files, subdirectories, links and missing sources disqualify the directory. Sources are checked again before deletion. |
 | `pytest-caches` | Test/lint caches next to Python markers; SQLite coverage data and Hypothesis examples | SAFE / CAUTION + manual | Coverage data and Hypothesis examples are report-only; unknown `.coverage.*` files are ignored. |
 | `vite-build` | `node_modules/.vite/` in projects depending on `vite` | SAFE | `package.json` parsed; others ignored. |

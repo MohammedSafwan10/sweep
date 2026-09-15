@@ -22,11 +22,14 @@ impl Detector for WindowsUpdateDetector {
         "Windows update leftovers"
     }
 
-    fn scan(&self, _ctx: &Ctx) -> Vec<Finding> {
-        // Fixed system locations (independent of user env).
-        let system_root = std::env::var_os("SystemRoot").map(std::path::PathBuf::from);
-        let windows = system_root.unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
-        scan_roots(&windows, self.id())
+    fn scan(&self, ctx: &Ctx) -> Vec<Finding> {
+        // Hermetic: the system root comes from Ctx (real machine resolves
+        // SystemRoot; tests get an empty fixture so real Windows Update
+        // leftovers can never leak into fixture-based assertions).
+        let Some(windows) = &ctx.system_root else {
+            return Vec::new();
+        };
+        scan_roots(windows, self.id())
     }
 }
 
@@ -84,13 +87,29 @@ mod tests {
     fn silent_without_leftovers() {
         let tmp = tempfile::tempdir().unwrap();
         let ctx = Ctx::for_tests(tmp.path());
-        // No SoftwareDistribution/Windows.old on the fixed system path in
-        // tests (and tiny leftovers are below MIN_BYTES by construction).
+        // Ctx::for_tests points system_root at an empty fixture, so the
+        // real machine's Windows Update downloads can never leak in.
+        assert!(super::WindowsUpdateDetector.scan(&ctx).is_empty());
+    }
+
+    #[test]
+    fn ctx_scan_finds_fixture_leftovers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = Ctx::for_tests(tmp.path());
+        let dl = ctx
+            .system_root
+            .as_ref()
+            .unwrap()
+            .join("SoftwareDistribution/Download");
+        fs::create_dir_all(&dl).unwrap();
+        fs::write(dl.join("big.cab"), vec![0u8; 60 * 1024 * 1024]).unwrap();
         let findings = super::WindowsUpdateDetector.scan(&ctx);
-        assert!(findings.iter().all(|f| f.bytes >= super::MIN_BYTES));
-        assert!(findings
-            .iter()
-            .all(|f| matches!(f.action, crate::model::CleanAction::Manual { .. })));
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].safety, crate::model::Safety::Caution);
+        assert!(matches!(
+            findings[0].action,
+            crate::model::CleanAction::Manual { .. }
+        ));
     }
 
     #[test]

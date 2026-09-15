@@ -47,6 +47,9 @@ pub struct Ctx {
     pub uv_cache: PathBuf,
     pub gradle_home: PathBuf,
     pub temp_dir: PathBuf,
+    /// Windows installation root (report-only detectors). `None` on
+    /// non-Windows and in hermetic tests with no fixture.
+    pub system_root: Option<PathBuf>,
     pub go_build_cache: PathBuf,
     pub go_mod_cache: PathBuf,
     pub docker_data_files: Vec<PathBuf>,
@@ -112,6 +115,8 @@ impl Ctx {
         });
         let gradle_home = var_path("GRADLE_USER_HOME").unwrap_or_else(|| home.join(".gradle"));
         let temp_dir = std::env::temp_dir();
+        let system_root =
+            var_path("SystemRoot").or_else(|| cfg!(windows).then(|| PathBuf::from(r"C:\Windows")));
         // Go caches: explicit env wins, else documented platform defaults.
         // (v1 never runs `go env`; see SAFETY.md.)
         let go_path = var_path("GOPATH").unwrap_or_else(|| home.join("go"));
@@ -157,6 +162,7 @@ impl Ctx {
             uv_cache,
             gradle_home,
             temp_dir,
+            system_root,
             go_build_cache,
             go_mod_cache,
             docker_data_files,
@@ -219,6 +225,8 @@ impl Ctx {
             uv_cache: local.join("uv").join("cache"),
             gradle_home: root.join(".gradle"),
             temp_dir: root.join("Temp"),
+            // Hermetic: an empty fixture dir, never the real system root.
+            system_root: Some(root.join("Windows")),
             go_build_cache: local.join("go-build"),
             go_mod_cache: root.join("go").join("pkg").join("mod"),
             docker_data_files: vec![local.join("Docker").join("docker_data.vhdx")],
