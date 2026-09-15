@@ -12,8 +12,8 @@ PowerShell took **3+ minutes and timed out** scanning one folder. `sweep` does t
 
 Detected: 48.2 GiB logical bytes across 241 items
 
-   7.5 GiB  [SAFE   ]  gradle version cache (9.1.0)
-   6.5 GiB  [SAFE   ]  npm cache
+   7.5 GiB  [SAFE  ]  gradle version cache (9.1.0)
+   6.5 GiB  [SAFE  ]  npm cache
    4.9 GiB  [CAUTION]  agent task output (noor_flutter_build)
    4.0 GiB  [CAUTION]  chrome on-device model
    ...
