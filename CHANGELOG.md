@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.1 — 2026-09-26
+
+- npm cleanup now removes only the regenerable `_cacache` download store. Running tools installed under `_npx` remain available; moving the whole npm cache could fail on Windows while those tools were active.
+
 ## v0.3.0 — 2026-09-26
 
 - Scans now flag incomplete traversal, group access errors, show retry paths, and offer `--strict`. `--allocated` reports file allocation separately from logical sizes and drive capacity.

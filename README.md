@@ -70,6 +70,7 @@ Full flags: `sweep scan --help`, `sweep detectors --help`, `sweep clean --help`,
 - **Dry-run by default.** `sweep clean` without `--execute` deletes nothing.
 - **Recycle Bin by default.** `--permanent` is opt-in.
 - **Three safety labels:** `SAFE` (regenerable caches) · `CAUTION` (slow to rebuild) · `DANGER` (data-loss risk — needs `--only all --force`).
+- npm cleanup targets `_cacache` only, preserving `_npx` packages that may be running as tools.
 - `docker` volumes, databases and anything unclassified are never touched silently.
 
 Details: [docs/SAFETY.md](docs/SAFETY.md) · detectors: [docs/DETECTORS.md](docs/DETECTORS.md)

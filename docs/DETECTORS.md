@@ -6,7 +6,7 @@
 | -- | ----- | ------ | ----- |
 | `cargo` | `registry/src`, `registry/cache` under `CARGO_HOME`; per-project `target/` next to `Cargo.toml` | SAFE | Redownloaded/rebuilt on demand. |
 | `pub-cache` | `hosted/`, `git/`, `_temp/` under `PUB_CACHE` (`%LOCALAPPDATA%\Pub\Cache`) | SAFE | `flutter pub get` restores. |
-| `js-caches` | npm cache, pnpm store, Yarn Cache subdirectory | SAFE | `pnpm store prune` equivalent included in effect. |
+| `js-caches` | npm `_cacache` download cache, pnpm store, Yarn Cache subdirectory | SAFE | Preserves npm `_npx` tools, which may be running; `pnpm store prune` equivalent included in effect. |
 | `gradle` | Superseded `wrapper/dists/gradle-*-all` (newest kept); older `caches/<ver>`; `modules-2` | CAUTION + manual | Version order cannot prove a daemon has stopped using an older cache. Sweep reports sizes but never deletes Gradle caches automatically. Strict parsing keeps both bin/all variants of the newest version; unknown names are not flagged. |
 | `android-sdk` | Per-version `ndk/`, `build-tools/`, `platforms/`, `cmake/`, `sources/` | CAUTION | sweep never guesses which version is "current" — you pick. |
 | `flutter-build` | `build/`, `.dart_tool/` next to `pubspec.yaml` | SAFE | `flutter clean` equivalent. |

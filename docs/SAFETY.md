@@ -6,7 +6,7 @@ Every cleanable thing carries a label:
 
 | Label | Meaning | Default behavior |
 | ----- | ------- | ---------------- |
-| `SAFE` | Regenerable byte-for-byte by the next build/install (`pub-cache`, `build/`, `.next/`, npm cache, cargo registry, old Gradle dists). | Included in `clean`. |
+| `SAFE` | Regenerable byte-for-byte by the next build/install (`pub-cache`, `build/`, `.next/`, npm download cache, cargo registry). | Included in `clean`. |
 | `CAUTION` | Deletable, but rebuilding costs minutes or mobile data (`node_modules`, gradle `modules-2`, Android NDK/platforms, stale temp, Docker vhdx). | Needs `--only caution` (or `all`). |
 | `DANGER` | Real data-loss risk if misclassified. Reserved for future detectors (e.g. anything holding live databases). | Needs `--only all` **plus** `--force`. |
 

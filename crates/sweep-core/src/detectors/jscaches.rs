@@ -1,4 +1,4 @@
-//! JS caches: npm cache, pnpm store, yarn cache.
+//! JS caches: npm download cache, pnpm store, yarn cache.
 
 use super::{dir_finding, Ctx, Detector};
 use crate::model::{Finding, Safety};
@@ -17,9 +17,9 @@ impl Detector for JsCachesDetector {
         let mut out = Vec::new();
         let candidates: &[(&str, std::path::PathBuf, &str)] = &[
             (
-                "npm cache",
-                ctx.npm_cache.clone(),
-                "Restored automatically; `npm cache verify` compacts it.",
+                "npm download cache",
+                ctx.npm_cache.join("_cacache"),
+                "Downloaded packages are restored automatically; preserves live npm exec (_npx) tools.",
             ),
             (
                 "pnpm store",
@@ -59,5 +59,28 @@ mod tests {
         let findings = super::JsCachesDetector.scan(&ctx);
         assert_eq!(findings.len(), 2);
         assert_eq!(findings.iter().map(|f| f.bytes).sum::<u64>(), 30);
+    }
+
+    #[test]
+    fn npm_finding_preserves_live_npx_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = Ctx::for_tests(tmp.path());
+        fs::create_dir_all(ctx.npm_cache.join("_cacache")).unwrap();
+        fs::write(ctx.npm_cache.join("_cacache").join("package"), b"package").unwrap();
+        fs::create_dir_all(ctx.npm_cache.join("_npx").join("running-tool")).unwrap();
+        fs::write(ctx.npm_cache.join("_npx/running-tool/index.js"), b"tool").unwrap();
+
+        let finding = super::JsCachesDetector
+            .scan(&ctx)
+            .into_iter()
+            .find(|finding| finding.label == "npm download cache")
+            .unwrap();
+        match finding.action {
+            crate::model::CleanAction::RemovePath { path } => {
+                assert_eq!(path, ctx.npm_cache.join("_cacache"));
+            }
+            other => panic!("unexpected action: {other:?}"),
+        }
+        assert_eq!(finding.bytes, 7);
     }
 }

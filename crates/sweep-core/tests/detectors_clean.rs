@@ -21,8 +21,10 @@ fn build_fake_home() -> tempfile::TempDir {
     fs::create_dir_all(&hosted).unwrap();
     fs::write(hosted.join("a.tar"), vec![0u8; 200]).unwrap();
     // npm cache
-    fs::create_dir_all(&ctx.npm_cache).unwrap();
-    fs::write(ctx.npm_cache.join("x"), vec![0u8; 50]).unwrap();
+    fs::create_dir_all(ctx.npm_cache.join("_cacache")).unwrap();
+    fs::write(ctx.npm_cache.join("_cacache/x"), vec![0u8; 50]).unwrap();
+    fs::create_dir_all(ctx.npm_cache.join("_npx")).unwrap();
+    fs::write(ctx.npm_cache.join("_npx/live-tool"), b"still running").unwrap();
     // gradle: one old + one new dist
     for (d, n) in [("gradle-8.11.1-all", 10), ("gradle-9.3.1-all", 20)] {
         let p = ctx.gradle_home.join("wrapper").join("dists").join(d);
@@ -87,4 +89,5 @@ fn execute_clean_removes_only_included_levels() {
     assert!(receipt.errors.is_empty());
     assert!(!ctx.cargo_home.join("registry").join("src").exists());
     assert!(!ctx.project_roots[0].join("myapp").join("build").exists());
+    assert!(ctx.npm_cache.join("_npx/live-tool").exists());
 }
