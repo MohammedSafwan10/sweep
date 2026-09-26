@@ -282,6 +282,7 @@ pub fn execute_with_progress(
         removed: Vec::new(),
         skipped: Vec::new(),
         errors: Vec::new(),
+        space_changes: Vec::new(),
     };
     let mut jobs: Vec<Job> = Vec::new();
     for item in &plan.items {
@@ -412,6 +413,14 @@ pub fn execute_with_progress(
     // a time). Trash plans stay sequential — the platform trash is a shell
     // service (COM IFileOperation on Windows).
     if opts.execute && !jobs.is_empty() {
+        let mut before = std::collections::BTreeMap::new();
+        for job in &jobs {
+            if let Some(root) = crate::space::volume_root(&job.path) {
+                if let Ok(available) = fs4::available_space(&root) {
+                    before.entry(root).or_insert(available);
+                }
+            }
+        }
         let total = jobs.len();
         let done = std::sync::atomic::AtomicUsize::new(0);
         let run = |job: &Job| -> (Result<RemovedItem, String>, Vec<String>) {
@@ -502,6 +511,17 @@ pub fn execute_with_progress(
                 }
             }
         }
+        receipt.space_changes = before
+            .into_iter()
+            .map(|(volume_root, available_before)| {
+                let available_after = fs4::available_space(&volume_root).ok();
+                crate::model::SpaceChange {
+                    volume_root,
+                    available_before,
+                    available_after,
+                }
+            })
+            .collect();
     }
     receipt
 }
@@ -707,6 +727,7 @@ mod tests {
         assert!(receipt.dry_run);
         assert_eq!(receipt.freed_bytes, 50);
         assert!(target.exists(), "dry run must not delete");
+        assert!(receipt.space_changes.is_empty());
     }
 
     #[test]
@@ -724,6 +745,8 @@ mod tests {
         assert_eq!(receipt.removed[0].via, "permanent");
         assert_eq!(receipt.freed_bytes, 50);
         assert!(receipt.errors.is_empty());
+        assert_eq!(receipt.space_changes.len(), 1);
+        assert!(receipt.space_changes[0].available_after.is_some());
     }
 
     #[test]

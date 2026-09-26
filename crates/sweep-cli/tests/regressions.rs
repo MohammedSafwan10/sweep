@@ -102,8 +102,9 @@ fn dry_run_then_execute_cleans_only_fixture_artifacts() {
     let preview: serde_json::Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(preview["dry_run"], true);
     assert_eq!(preview["freed_bytes"], 4096);
+    assert!(preview["space_changes"].as_array().unwrap().is_empty());
     assert!(project.join("target/debug/cache").exists());
-    isolated(tmp.path())
+    let receipt = isolated(tmp.path())
         .args([
             "clean",
             "--id",
@@ -116,7 +117,15 @@ fn dry_run_then_execute_cleans_only_fixture_artifacts() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("\"freed_bytes\": 4096"));
+        .stdout(predicate::str::contains("\"freed_bytes\": 4096"))
+        .get_output()
+        .stdout
+        .clone();
+    let receipt: serde_json::Value = serde_json::from_slice(&receipt).unwrap();
+    assert_eq!(receipt["space_changes"].as_array().unwrap().len(), 1);
+    assert!(receipt["space_changes"][0]["available_after"]
+        .as_u64()
+        .is_some());
     assert!(!project.join("target").exists());
     assert!(project.join("source.rs").exists());
 }

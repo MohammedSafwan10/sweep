@@ -1,10 +1,12 @@
 //! Gradle: stale wrapper distributions + stale version caches.
 //!
-//! Keeps the newest wrapper dist and newest version cache; everything
-//! older is regenerable (`gradle wrapper` re-downloads on demand).
+//! Keeps the newest wrapper dist and newest version cache. Older versions
+//! are reported for manual review: version order does not prove a cache is
+//! idle (a build may still be using an older Gradle daemon).
 
 use super::{dir_finding, Ctx, Detector};
-use crate::model::{Finding, Safety};
+use crate::model::{CleanAction, Finding, Safety};
+use std::path::Path;
 
 pub struct GradleDetector;
 
@@ -36,12 +38,11 @@ impl Detector for GradleDetector {
             if parse_dist_version(name).is_none() {
                 continue;
             }
-            if let Some(f) = dir_finding(
+            if let Some(f) = manual_finding(
                 self.id(),
                 format!("gradle wrapper dist ({name})"),
                 &dists.join(name),
-                Safety::Safe,
-                "Superseded Gradle distribution; re-downloaded if ever needed.",
+                "Older Gradle distribution; an active build may still use it.",
             ) {
                 out.push(f);
             }
@@ -60,28 +61,37 @@ impl Detector for GradleDetector {
             if newest_cache.as_ref().is_some_and(|(_, n)| *n == name) {
                 continue;
             }
-            if let Some(f) = dir_finding(
+            if let Some(f) = manual_finding(
                 self.id(),
                 format!("gradle version cache ({name})"),
                 &caches.join(name),
-                Safety::Safe,
-                "Stale Gradle version cache.",
+                "Older Gradle version cache; an active daemon may still use it.",
             ) {
                 out.push(f);
             }
         }
-        // Shared dependency cache: safe to drop but re-download is slow.
-        if let Some(f) = dir_finding(
+        // Shared dependency cache may be in use and is expensive to restore.
+        if let Some(f) = manual_finding(
             self.id(),
             "gradle dependency cache (modules-2)".to_string(),
             &caches.join("modules-2"),
-            Safety::Caution,
-            "Shared dependency artifacts. Deleting forces a full re-download on next build.",
+            "Shared dependency artifacts may be in use. Clearing forces a full re-download.",
         ) {
             out.push(f);
         }
         out
     }
+}
+
+fn manual_finding(id: &'static str, label: String, path: &Path, detail: &str) -> Option<Finding> {
+    let mut finding = dir_finding(id, label, path, Safety::Caution, detail)?;
+    finding.action = CleanAction::Manual {
+        instructions: format!(
+            "Stop Gradle builds and daemons, verify no project needs this cache, then use Gradle's cleanup or remove only {}.",
+            path.display()
+        ),
+    };
+    Some(finding)
 }
 
 /// `gradle-8.13-all` -> (8, 13, 0). Accepts `-bin`/`-all` suffixes.
@@ -152,6 +162,10 @@ mod tests {
         assert_eq!(findings.len(), 1);
         assert!(findings[0].label.contains("8.11.1"));
         assert_eq!(findings[0].bytes, 10);
+        assert!(matches!(
+            findings[0].action,
+            crate::model::CleanAction::Manual { .. }
+        ));
     }
 
     #[test]

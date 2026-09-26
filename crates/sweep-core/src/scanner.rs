@@ -14,7 +14,7 @@
 //!   Docker vhdx) report their logical size. Receipts therefore say
 //!   "would free ~N logical bytes", matching what caches re-download.
 
-use crate::model::{DirEntry, ScanOptions, ScanReport, SCHEMA_VERSION};
+use crate::model::{DirEntry, ScanIssues, ScanOptions, ScanReport, VolumeStats, SCHEMA_VERSION};
 use ignore::{WalkBuilder, WalkState};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -114,17 +114,41 @@ pub fn scan_dir(
     opts: &ScanOptions,
     progress: Option<mpsc::SyncSender<LiveProgress>>,
 ) -> Result<ScanReport, ScanError> {
+    scan_dir_with_allocated(root, opts, progress, false)
+}
+
+/// As [`scan_dir`], with an optional slower per-file allocation query.
+pub fn scan_dir_with_allocated(
+    root: &Path,
+    opts: &ScanOptions,
+    progress: Option<mpsc::SyncSender<LiveProgress>>,
+    allocated: bool,
+) -> Result<ScanReport, ScanError> {
     let canon = std::fs::canonicalize(root)
         .map_err(|e| ScanError::RootUnreadable(root.display().to_string(), e.to_string()))?;
     if !canon.is_dir() {
         return Err(ScanError::NotADirectory(root.display().to_string()));
     }
+    // An unreadable root must fail outright rather than returning a
+    // plausible zero total. Unreadable descendants remain report warnings.
+    std::fs::read_dir(&canon)
+        .map_err(|e| ScanError::RootUnreadable(root.display().to_string(), e.to_string()))?;
+    let volume = fs4::statvfs(&canon).ok().map(|stats| VolumeStats {
+        total_bytes: stats.total_space(),
+        free_bytes: stats.free_space(),
+        available_bytes: stats.available_space(),
+    });
 
     let partials: Arc<Mutex<Vec<ShardData>>> = Arc::new(Mutex::new(Vec::new()));
     let warnings: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let suppressed = Arc::new(AtomicUsize::new(0));
+    let permission_denied = Arc::new(AtomicU64::new(0));
+    let not_found = Arc::new(AtomicU64::new(0));
+    let other_issues = Arc::new(AtomicU64::new(0));
+    let retry_paths: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
     let files_seen = Arc::new(AtomicU64::new(0));
     let bytes_seen = Arc::new(AtomicU64::new(0));
+    let allocated_seen = Arc::new(AtomicU64::new(0));
     let min_file_bytes = opts.min_file_bytes;
 
     let mut builder = WalkBuilder::new(&canon);
@@ -142,8 +166,13 @@ pub fn scan_dir(
         let partials = Arc::clone(&partials);
         let warnings = Arc::clone(&warnings);
         let suppressed = Arc::clone(&suppressed);
+        let permission_denied = Arc::clone(&permission_denied);
+        let not_found = Arc::clone(&not_found);
+        let other_issues = Arc::clone(&other_issues);
+        let retry_paths = Arc::clone(&retry_paths);
         let files_seen = Arc::clone(&files_seen);
         let bytes_seen = Arc::clone(&bytes_seen);
+        let allocated_seen = Arc::clone(&allocated_seen);
         let progress = progress.clone();
         let root = canon.clone();
         let mut shard = Shard {
@@ -161,6 +190,14 @@ pub fn scan_dir(
             let entry = match entry {
                 Ok(e) => e,
                 Err(err) => {
+                    record_issue(
+                        err.io_error().map(std::io::Error::kind),
+                        error_path(&err),
+                        &permission_denied,
+                        &not_found,
+                        &other_issues,
+                        &retry_paths,
+                    );
                     if let Ok(mut w) = warnings.lock() {
                         if w.len() < MAX_WARNINGS {
                             w.push(trim_warning(&err.to_string()));
@@ -198,6 +235,14 @@ pub fn scan_dir(
             let meta = match entry.metadata() {
                 Ok(meta) => meta,
                 Err(err) => {
+                    record_issue(
+                        err.io_error().map(std::io::Error::kind),
+                        Some(entry.path()),
+                        &permission_denied,
+                        &not_found,
+                        &other_issues,
+                        &retry_paths,
+                    );
                     if let Ok(mut w) = warnings.lock() {
                         if w.len() < MAX_WARNINGS {
                             w.push(trim_warning(&err.to_string()));
@@ -212,6 +257,33 @@ pub fn scan_dir(
                 return WalkState::Continue;
             }
             let len = meta.len();
+            if allocated {
+                match allocated_size(entry.path(), &meta) {
+                    Ok(bytes) => {
+                        allocated_seen.fetch_add(bytes, Ordering::Relaxed);
+                    }
+                    Err(err) => {
+                        record_issue(
+                            Some(err.kind()),
+                            Some(entry.path()),
+                            &permission_denied,
+                            &not_found,
+                            &other_issues,
+                            &retry_paths,
+                        );
+                        if let Ok(mut w) = warnings.lock() {
+                            if w.len() < MAX_WARNINGS {
+                                w.push(trim_warning(&format!(
+                                    "allocated size unavailable for {}: {err}",
+                                    entry.path().display()
+                                )));
+                            } else {
+                                suppressed.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                }
+            }
             shard.files += 1;
             shard.since_files += 1;
             shard.since_bytes += len;
@@ -316,13 +388,27 @@ pub fn scan_dir(
             bytes_seen: root_bytes,
         });
     }
+    let complete = warnings.is_empty() && suppressed.load(Ordering::Relaxed) == 0;
+    let retry_paths = retry_paths
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
     Ok(ScanReport {
         schema_version: SCHEMA_VERSION,
         root: display_path(&canon),
+        complete,
+        volume,
         total_bytes: root_bytes,
+        allocated_bytes: allocated.then(|| allocated_seen.load(Ordering::Relaxed)),
         total_files: root_files,
         total_dirs,
         warnings_suppressed: suppressed.load(Ordering::Relaxed),
+        issues: ScanIssues {
+            permission_denied: permission_denied.load(Ordering::Relaxed),
+            not_found: not_found.load(Ordering::Relaxed),
+            other: other_issues.load(Ordering::Relaxed),
+        },
+        retry_paths,
         warnings,
         entries,
     })
@@ -382,6 +468,45 @@ pub fn size_of_dir(path: &Path) -> (u64, u64) {
         })
     });
     (bytes.load(Ordering::Relaxed), files.load(Ordering::Relaxed))
+}
+
+#[cfg(windows)]
+fn allocated_size(path: &Path, _meta: &std::fs::Metadata) -> std::io::Result<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{GetLastError, SetLastError};
+    use windows_sys::Win32::Storage::FileSystem::GetCompressedFileSizeW;
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut high = 0u32;
+    // SAFETY: `wide` is NUL terminated and lives through the call; `high`
+    // is a valid writable output pointer. The walker already rejected links.
+    let low = unsafe {
+        SetLastError(0);
+        GetCompressedFileSizeW(wide.as_ptr(), &mut high)
+    };
+    // INVALID_FILE_SIZE is also a valid low word, so check last error.
+    if low == u32::MAX {
+        // SAFETY: GetLastError has no pointer arguments and reads thread state.
+        let code = unsafe { GetLastError() };
+        if code != 0 {
+            return Err(std::io::Error::from_raw_os_error(code as i32));
+        }
+    }
+    Ok((u64::from(high) << 32) | u64::from(low))
+}
+
+#[cfg(unix)]
+fn allocated_size(_path: &Path, meta: &std::fs::Metadata) -> std::io::Result<u64> {
+    use std::os::unix::fs::MetadataExt;
+    Ok(meta.blocks().saturating_mul(512))
+}
+
+#[cfg(not(any(windows, unix)))]
+fn allocated_size(_path: &Path, _meta: &std::fs::Metadata) -> std::io::Result<u64> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "allocated size is unavailable on this platform",
+    ))
 }
 
 /// Parse human sizes: `512`, `10KB`, `1.5 MB`, `2GiB` (case-insensitive).
@@ -472,6 +597,45 @@ pub fn display_path(p: &Path) -> PathBuf {
     p.to_path_buf()
 }
 
+fn error_path(err: &ignore::Error) -> Option<&Path> {
+    match err {
+        ignore::Error::WithPath { path, .. } => Some(path),
+        ignore::Error::WithDepth { err, .. } | ignore::Error::WithLineNumber { err, .. } => {
+            error_path(err)
+        }
+        ignore::Error::Partial(errors) => errors.iter().find_map(error_path),
+        _ => None,
+    }
+}
+
+fn record_issue(
+    kind: Option<std::io::ErrorKind>,
+    path: Option<&Path>,
+    permission_denied: &AtomicU64,
+    not_found: &AtomicU64,
+    other: &AtomicU64,
+    retry_paths: &Mutex<Vec<PathBuf>>,
+) {
+    match kind {
+        Some(std::io::ErrorKind::PermissionDenied) => {
+            permission_denied.fetch_add(1, Ordering::Relaxed);
+        }
+        Some(std::io::ErrorKind::NotFound) => {
+            not_found.fetch_add(1, Ordering::Relaxed);
+        }
+        _ => {
+            other.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    if let Some(path) = path {
+        if let Ok(mut paths) = retry_paths.lock() {
+            if paths.len() < MAX_WARNINGS {
+                paths.push(display_path(path));
+            }
+        }
+    }
+}
+
 fn trim_warning(s: &str) -> String {
     const MAX: usize = 300;
     if s.len() > MAX {
@@ -517,6 +681,8 @@ mod tests {
         };
         let report = scan_dir(dir.path(), &opts, None).unwrap();
         assert_eq!(report.total_bytes, 650);
+        assert!(report.complete);
+        assert!(report.volume.as_ref().is_some_and(|v| v.total_bytes > 0));
         assert_eq!(report.total_files, 4);
         // root first, then a (400), then b (50)
         assert_eq!(report.entries[0].bytes, 650);
@@ -607,6 +773,36 @@ mod tests {
         let trimmed = trim_warning(&s);
         assert!(trimmed.len() <= 300 + "…".len());
         assert!(trimmed.ends_with('…'));
+    }
+
+    #[test]
+    fn issues_keep_counts_and_bounded_retry_paths() {
+        let denied = AtomicU64::new(0);
+        let missing = AtomicU64::new(0);
+        let other = AtomicU64::new(0);
+        let paths = Mutex::new(Vec::new());
+        for index in 0..(MAX_WARNINGS + 5) {
+            let path = PathBuf::from(format!("missing-{index}"));
+            record_issue(
+                Some(std::io::ErrorKind::PermissionDenied),
+                Some(&path),
+                &denied,
+                &missing,
+                &other,
+                &paths,
+            );
+        }
+        record_issue(
+            Some(std::io::ErrorKind::NotFound),
+            None,
+            &denied,
+            &missing,
+            &other,
+            &paths,
+        );
+        assert_eq!(denied.load(Ordering::Relaxed), (MAX_WARNINGS + 5) as u64);
+        assert_eq!(missing.load(Ordering::Relaxed), 1);
+        assert_eq!(paths.lock().unwrap().len(), MAX_WARNINGS);
     }
 
     #[test]

@@ -47,7 +47,7 @@ fn full_detector_sweep_finds_expected_bytes() {
     assert_eq!(total, 660, "findings: {findings:#?}");
     assert!(findings
         .iter()
-        .all(|f| matches!(f.action, CleanAction::RemovePath { .. })));
+        .any(|f| matches!(f.action, CleanAction::Manual { .. })));
     assert!(findings.windows(2).all(|w| w[0].bytes >= w[1].bytes));
 }
 
@@ -58,8 +58,9 @@ fn dry_run_clean_receipt_is_exact() {
     let findings = sweep_core::detectors::scan_all(&ctx);
     let receipt = cleaner::clean(&findings, &CleanOptions::default());
     assert!(receipt.dry_run);
-    assert_eq!(receipt.freed_bytes, 660);
-    assert_eq!(receipt.removed.len(), findings.len());
+    assert_eq!(receipt.freed_bytes, 650);
+    assert_eq!(receipt.removed.len(), findings.len() - 1);
+    assert_eq!(receipt.skipped.len(), 1);
     assert!(receipt.errors.is_empty());
     // Nothing gone: cargo src still there.
     assert!(ctx

@@ -24,12 +24,14 @@ Every cleanable thing carries a label:
 6. **Permanent deletes count bytes while unlinking.** The parallel deleter removes subtree contents concurrently (raw `std::fs` unlinks — benchmarked faster than shell file-operation APIs) and accumulates the logical sizes of files it actually removed; locked files surface as errors and their bytes are not counted for the failed item. Trash plans still pre-measure (the OS moves the tree). Byte totals describe logical file lengths, not guaranteed disk space recovered: hard links and sparse files can differ, and moving to the Recycle Bin does not release disk space until it is emptied.
 7. **Confirmation executes the displayed plan.** It does not discover and delete new findings after approval. Duplicate paths are counted once; a finding covered by a broader surviving finding is skipped (one delete, bytes counted once). A parent containing an item excluded from the run (filtered level, danger gate) is itself skipped so the gate cannot be bypassed.
 8. **Temp cleanup needs caution opt-in.** Every descendant must be older than seven days and readable; freshness is checked again before execution. Age alone cannot prove data is disposable.
+9. **Executed cleans report observed free space.** Receipts include available bytes before and after on affected volumes. Other programs can change that measurement during a clean, and moving items to the Recycle Bin usually does not free space until the bin is emptied. Dry runs contain no space measurements.
+10. **Emptying the Recycle Bin is a separate Windows command.** `sweep bin --drive C` only reports item count and bytes. `--execute` permanently empties that drive's bin after confirmation; `--json --execute` also requires `--yes`. `sweep clean` never empties the bin implicitly.
 
 These checks reduce accidental traversal and stale-plan risks; they are not an atomic filesystem transaction. Stop builds and installers before cleaning. Hostile concurrent path replacement between the last check and the OS deletion call is not fully prevented. A failed recursive deletion can also have removed some children before reporting an error.
 
 ## What sweep will never do
 
-- Delete anything outside a detector finding or an explicit scan entry.
+- Delete anything outside a detector finding during `clean`. The separate `bin --execute` command permanently removes only the selected drives' Recycle Bin contents after confirmation.
 - Follow a symlink/junction during delete (deletion uses the literal path).
 - Touch `DANGER` without `--only all --force` in the same command.
 - Phone home, auto-update, or upload paths (there is no network code at all).

@@ -10,19 +10,27 @@ This is the machine contract. Human docs: `README.md`, `docs/SAFETY.md`.
 4. **Pin `schema_version`.** If `schema_version != 1`, stop and report — the contract changed.
 5. **Parse JSON, never screen-scrape** human output.
 6. Prefer `--id <detector>` to scope deletes (e.g. `--id pub-cache`). Unknown `--id` values exit 1 — treat as a typo signal, not as "nothing found".
+7. `bin --execute` permanently removes Recycle Bin contents. Only run it after explicit human approval for the named drive letters; first show the `bin` dry-run report. A prior `clean --execute` approval does not authorize emptying the bin.
 
 ## Commands
 
 ```sh
-sweep scan <PATH> [--top 30] [--min-size 1MB] [--min-file 10MB] [--same-fs] [--json]
+sweep scan <PATH> [--top 30] [--min-size 1MB] [--min-file 10MB] [--same-fs] [--allocated] [--strict] [--json]
+sweep review <PATH> [--top 20] [--min-size 500MB] [--all-detectors] [--strict] [--json]
 sweep detectors [--roots DIR...] [--no-docker] [--json]
 sweep clean [--id ID...] [--only safe|caution|all] [--force] [--permanent]
             [--execute] [--yes] [--json] [--roots DIR...] [--no-docker]
+sweep bin --drive C [--drive D...] [--execute] [--yes] [--json]  # Windows
 ```
 
 - `--only` default is `safe`. `caution` adds slow-to-rebuild items. `all` still needs `--force` for `danger`.
 - `--roots` replaces the default project root (current directory) for artifact detectors; repeatable.
 - `--no-docker` skips Docker detection (daemon down / offline machines).
+- `scan` reports observed logical bytes. `complete: false` means unreadable entries or a count mismatch made the measured total incomplete. `--strict` returns exit 2 in that case while still printing the report. `volume` gives filesystem capacity and free space when the OS supplies it; logical scan bytes need not match physical used space.
+- `--allocated` adds a slower per-path allocation sum. Hard links can be counted more than once; it is never a claim of reclaimable space.
+- `detectors` includes `recommendations[]` for review order. Unclassified paths have no cleanup action.
+- `review` lists large paths not matched by a project detector removal finding. `--all-detectors` also checks global caches. Its JSON has `review_only: true`; do not turn these entries into automatic delete targets.
+- `bin` is dry-run by default and requires explicit drive letters. Its JSON reports per-drive `before` and, after execution, `after` item/byte counts plus available space. `--json --execute` requires `--yes`.
 
 ## Exit codes
 
@@ -40,18 +48,23 @@ sweep clean [--id ID...] [--only safe|caution|all] [--force] [--permanent]
 {
   "schema_version": 1,
   "root": "C:\\Users\\you\\Projects",
+  "complete": false,
+  "volume": {"total_bytes": 500000000000, "free_bytes": 100000000000, "available_bytes": 100000000000},
   "total_bytes": 123456789,
+  "allocated_bytes": null,
   "total_files": 42000,
   "total_dirs": 3100,
   "warnings": ["permission denied: ..."],
   "warnings_suppressed": 0,
+  "issues": {"permission_denied": 1, "not_found": 0, "other": 0},
+  "retry_paths": ["C:\\Users\\you\\Projects\\private"],
   "entries": [
     {"path": "...", "bytes": 999, "files": 12, "depth": 1, "is_dir": true}
   ]
 }
 ```
 
-`detectors --json` → `{schema_version, findings[], total_bytes}` where each finding is:
+`detectors --json` → `{schema_version, findings[], total_bytes, recommendations[]}` where each finding is:
 
 ```json
 {
@@ -75,7 +88,8 @@ sweep clean [--id ID...] [--only safe|caution|all] [--force] [--permanent]
   "freed_bytes": 1234,
   "removed": [{"path": "...", "bytes": 1234, "via": "trash", "safety": "safe"}],
   "skipped": [{"label": "...", "safety": "caution", "reason": "manual steps required: ..."}],
-  "errors": []
+  "errors": [],
+  "space_changes": []
 }
 ```
 
@@ -91,6 +105,9 @@ measure before handing the tree to the OS. `removed[]` lists every item
 that fully succeeded — `sum(removed[].bytes) == freed_bytes` on runs
 without partial failures. Interactive `--execute` runs print per-item
 progress to **stderr**; `--json` output on stdout stays pure.
+`space_changes[]` records available bytes before and after an executed clean
+for affected volumes. It is empty in dry runs. These measurements include
+other system activity and Recycle Bin moves may show little immediate gain.
 
 ## Recommended agent flow
 

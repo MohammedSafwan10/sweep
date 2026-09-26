@@ -96,14 +96,42 @@ pub struct DirEntry {
 pub struct ScanReport {
     pub schema_version: u32,
     pub root: PathBuf,
+    /// False when an entry could not be read or an internal count check failed.
+    /// The totals then describe only the files Sweep could observe.
+    pub complete: bool,
+    /// Capacity of the filesystem containing the root, when available.
+    /// This is physical filesystem accounting, distinct from logical file sizes.
+    pub volume: Option<VolumeStats>,
+    /// Logical file sizes observed under the root, not allocated disk usage.
     pub total_bytes: u64,
+    /// Optional sum of allocated bytes for each observed file path. Hard
+    /// links may count more than once; this is not a reclaimable-space claim.
+    pub allocated_bytes: Option<u64>,
     pub total_files: u64,
     pub total_dirs: u64,
     /// Non-fatal problems (permission denied, ...). Capped; see `warnings_suppressed`.
     pub warnings: Vec<String>,
     pub warnings_suppressed: usize,
+    /// Counts of entries whose size or traversal could not be completed.
+    pub issues: ScanIssues,
+    /// Sample paths to retry after access or transient errors are resolved.
+    pub retry_paths: Vec<PathBuf>,
     /// Ranked largest-first, already filtered + truncated to `top`.
     pub entries: Vec<DirEntry>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ScanIssues {
+    pub permission_denied: u64,
+    pub not_found: u64,
+    pub other: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeStats {
+    pub total_bytes: u64,
+    pub free_bytes: u64,
+    pub available_bytes: u64,
 }
 
 /// How a finding can be cleaned.
@@ -183,6 +211,16 @@ pub struct CleanReceipt {
     pub removed: Vec<RemovedItem>,
     pub skipped: Vec<SkippedItem>,
     pub errors: Vec<String>,
+    /// Available space on affected volumes, measured around execution.
+    /// Empty for dry runs. Other processes may also change these figures.
+    pub space_changes: Vec<SpaceChange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpaceChange {
+    pub volume_root: PathBuf,
+    pub available_before: u64,
+    pub available_after: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -7,7 +7,7 @@
 | `cargo` | `registry/src`, `registry/cache` under `CARGO_HOME`; per-project `target/` next to `Cargo.toml` | SAFE | Redownloaded/rebuilt on demand. |
 | `pub-cache` | `hosted/`, `git/`, `_temp/` under `PUB_CACHE` (`%LOCALAPPDATA%\Pub\Cache`) | SAFE | `flutter pub get` restores. |
 | `js-caches` | npm cache, pnpm store, Yarn Cache subdirectory | SAFE | `pnpm store prune` equivalent included in effect. |
-| `gradle` | Superseded `wrapper/dists/gradle-*-all` (newest kept); stale `caches/<ver>`; `modules-2` | SAFE / CAUTION (`modules-2`) | Strict version parsing keeps both bin/all variants of the newest version; unknown dir names are never flagged. |
+| `gradle` | Superseded `wrapper/dists/gradle-*-all` (newest kept); older `caches/<ver>`; `modules-2` | CAUTION + manual | Version order cannot prove a daemon has stopped using an older cache. Sweep reports sizes but never deletes Gradle caches automatically. Strict parsing keeps both bin/all variants of the newest version; unknown names are not flagged. |
 | `android-sdk` | Per-version `ndk/`, `build-tools/`, `platforms/`, `cmake/`, `sources/` | CAUTION | sweep never guesses which version is "current" — you pick. |
 | `flutter-build` | `build/`, `.dart_tool/` next to `pubspec.yaml` | SAFE | `flutter clean` equivalent. |
 | `nextjs-build` | `.next/` (SAFE) + `node_modules/` (CAUTION) in projects depending on `next` | mixed | `package.json` is parsed; non-Next projects ignored. |

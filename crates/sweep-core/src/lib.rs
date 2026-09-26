@@ -6,7 +6,9 @@
 pub mod cleaner;
 pub mod detectors;
 pub mod model;
+pub mod recycle;
 pub mod scanner;
+mod space;
 
 pub use cleaner::{clean, execute, plan, CleanPlan};
 pub use model::{
