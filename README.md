@@ -1,28 +1,109 @@
-# sweep 🧹
+# Sweep
 
-Find what's eating your disk and clean it safely — in seconds.
+Disk cleanup for coding agents. Built in Rust.
 
 ![CI](https://github.com/MohammedSafwan10/sweep/actions/workflows/ci.yml/badge.svg)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
-PowerShell took **3+ minutes and timed out** scanning one folder. `sweep` scans large trees quickly, recognizes common developer caches, and only deletes what you approve — to the Recycle Bin first, never permanently by default.
+Old builds, package caches, and project output accumulate across a developer's SSD.
+Sweep gives coding agents a CLI to find what is taking space, recognize known
+developer artifacts, preview cleanup, and report the result as structured JSON.
 
-```text
-> sweep scan C:\ --top 20
-> sweep review D:\Dev --top 20
-> sweep detectors
-> sweep clean                 # preview only
-> sweep bin --drive C         # preview Recycle Bin contents
-```
+**Scan → review → approve → clean → verify.** Cleanup is a dry run unless
+`--execute` is supplied, and uses the Recycle Bin or system trash by default.
+
+[![Watch the Sweep demo](docs/assets/sweep-demo.png)](docs/assets/sweep-demo.mp4)
+
+[Watch the 40-second comparison](docs/assets/sweep-demo.mp4): PowerShell 7 and
+Sweep on isolated copies of **31.43 GB of real build output and package caches**.
+This is an edited agent walkthrough using measured command results;
+accelerated sections are labeled. Original projects were not deleted.
 
 ## Install
+
+Download `sweep.exe` from [Releases](https://github.com/MohammedSafwan10/sweep/releases),
+place it in a directory on your agent's `PATH`, and check `sweep --version`.
+There is no installer or background service to configure.
+
+Or install from source with Rust 1.88 or newer:
 
 ```sh
 cargo install --git https://github.com/MohammedSafwan10/sweep
 ```
 
-No Rust? Download `sweep.exe` from [Releases](https://github.com/MohammedSafwan10/sweep/releases)
-and run it in a terminal — no install needed. winget / scoop packages are on the roadmap.
+## Give it to your agent
+
+An agent that can run local commands can use Sweep directly. No MCP server is
+required. Give it the [agent contract](docs/AGENTS.md), or add these instructions
+to your project's agent guidance:
+
+```text
+Use Sweep for disk audits and developer-cache cleanup.
+Read docs/AGENTS.md from the Sweep repository for its command/JSON contract.
+Use --json and require schema_version 1. Start with read-only commands.
+Show exact paths, safety labels, and rebuild costs before requesting approval.
+Treat scan totals and review-only entries as information, not deletion permission.
+Never execute cleanup without approval for its scope. Never use --permanent,
+--force, or bin --execute without explicit approval for that action.
+Report errors, skipped items, and observed space changes from the receipt.
+```
+
+Start with a scan and a scoped preview:
+
+```powershell
+sweep scan D:\Dev --top 20 --json
+sweep detectors --roots D:\Dev --json
+sweep clean --roots D:\Dev --id nextjs-build --id flutter-build --json
+```
+
+`--roots` controls project-artifact searches; global cache detectors still use
+their configured cache locations. Choose detector IDs deliberately when previewing
+or cleaning. See the [detector reference](docs/DETECTORS.md) for IDs and cache-location
+environment variables.
+
+**A separate execution command rescans.** Sweep does not currently accept a saved
+reviewed plan as input. Interactive `clean --execute` displays a freshly built plan,
+asks for confirmation, then executes that in-memory plan. An agent using
+`--execute --json --yes` receives no new interactive confirmation; a prior dry-run
+file is not bound to that execution. Stop builds/installers, keep the approved
+scope narrow, and use interactive confirmation when the fresh exact plan must be
+reviewed. See [safety details](docs/SAFETY.md).
+
+## What it recognizes
+
+| Ecosystem | Examples |
+| --- | --- |
+| Rust | Cargo registry downloads and project `target/` |
+| JavaScript / TypeScript | npm, pnpm, Yarn, Next.js, Vite, Angular |
+| Flutter / Dart | `build/`, `.dart_tool/`, pub package cache |
+| Python | pip, uv, source-backed bytecode, test and lint caches |
+| Go | Build and module caches |
+| Android / JVM / .NET | SDK versions, Gradle caches, project output |
+| Other disk consumers | Docker disks, browser caches, agent artifacts, Windows update files |
+
+Recognition does not mean automatic deletion. Gradle, uv, Docker disks, .NET
+output, and Windows update findings require manual action; other items may require
+`CAUTION` opt-in. The [20-detector registry](docs/DETECTORS.md) documents each case.
+Unknown large folders remain review-only.
+
+## Measured comparison
+
+One paired run on Windows 11 with **PowerShell 7.6.7** and **Sweep 0.3.1**, using
+equivalent isolated copies of real Flutter, Rust, Next.js, npm, and Dart artifacts:
+
+| Operation | PowerShell 7 | Sweep |
+| --- | ---: | ---: |
+| Scan 167,684 files | 5.43 s | 0.66 s |
+| Permanently clean 31.43 GB and verify protected files | 25.43 s | 9.76 s |
+
+Both scans returned the same file count and logical byte total. Both cleanups
+removed the same 14 approved paths, preserved all 19 protected files, and reported
+zero errors. PowerShell received the approved path list; this compares command
+execution, not agent reasoning. Runs were sequential, PowerShell first, so cache
+state and other system activity may influence results. These are single-run
+observations, not a general speed guarantee.
+
+[Methodology, exact timings, and sanitized results](docs/BENCHMARKS.md).
 
 ## Usage
 
@@ -33,8 +114,6 @@ sweep review <PATH> [--top 20] [--min-size 500MB] # large unclassified paths; re
 sweep detectors [--roots DIR...]                # known caches + build junk
 sweep clean                                     # dry-run plan (default: safe items, to trash)
 sweep clean --execute                           # ask, then delete to Recycle Bin
-sweep clean --execute --permanent               # skip the bin for regenerable build output
-sweep clean --execute --only caution --yes      # include caution items, no prompt
 sweep bin --drive C --drive D                   # inspect Recycle Bins; dry-run
 sweep bin --drive C --drive D --execute         # confirm permanent emptying
 ```
@@ -75,25 +154,13 @@ Full flags: `sweep scan --help`, `sweep detectors --help`, `sweep clean --help`,
 
 Details: [docs/SAFETY.md](docs/SAFETY.md) · detectors: [docs/DETECTORS.md](docs/DETECTORS.md)
 
-## For coding agents
-
-`sweep` is built to be driven by agents (OpenCode, etc.): stable `--json` schemas, exit codes, and a strict opt-in model for destructive actions. Contract: [docs/AGENTS.md](docs/AGENTS.md).
-
-## Performance
-
-- **Parallel scanner** — one worker per core with thread-local aggregation: ~2M files in seconds.
-- **Parallel one-pass deleter** — raw filesystem unlinks across independent subtrees, sizes counted while deleting: a 30k-file tree deletes in ~1.5s (v0.1.0 took 56s on the same fixture).
-- **Parallel detectors** — the full registry scans concurrently; project walks prune managed cache trees instead of descending into them.
-
 ## Roadmap
 
-- [x] M1 — parallel scanner + CLI (+ `--json`)
-- [x] M2 — 20-detector registry (Rust, Dart, JS, TS, Python, Go, .NET, Gradle, Android, Docker, AI-agent artifacts, browser caches…)
-- [x] M3 — safe cleaner (trash-first, receipts)
-- [x] M5 (part 1) — v0.2.0 released with Windows exe + parallel one-pass deleter
-- [x] v0.3.0 — partial-scan reporting, allocated-size option, review command, free-space receipts, explicit Windows Recycle Bin command
-- [ ] M4 — interactive TUI (`ratatui`)
-- [ ] M5 (part 2) — winget/scoop, signed Windows builds
+- Interactive terminal UI
+- winget / scoop packages
+- Signed Windows builds
+
+Past releases: [CHANGELOG.md](CHANGELOG.md).
 
 ## Contributing
 

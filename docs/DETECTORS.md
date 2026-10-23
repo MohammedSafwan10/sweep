@@ -1,4 +1,4 @@
-# DETECTORS.md — the v1 registry
+# Cleanup detectors
 
 `detector_id` values are stable and selectable via `sweep clean --id <id>`.
 
@@ -20,7 +20,7 @@
 | `vite-build` | `node_modules/.vite/` in projects depending on `vite` | SAFE | `package.json` parsed; others ignored. |
 | `angular-build` | `.angular/cache/` in projects depending on `@angular/cli`/`core` | SAFE | Other `.angular` contents are preserved. Custom cache paths are not detected. |
 | `dotnet-build` | `bin/`, `obj/` next to `*.csproj`/`*.fsproj`/`*.vbproj` | CAUTION + manual | Never deletes whole output directories: they can contain application data. Solution-only roots are ignored. Review and use `dotnet clean`. |
-| `go-cache` | `GOCACHE` build cache (SAFE) + `GOMODCACHE` module cache (CAUTION) | mixed | Env (`GOCACHE`/`GOMODCACHE`/`GOPATH`) with platform defaults; v1 never runs `go`. |
+| `go-cache` | `GOCACHE` build cache (SAFE) + `GOMODCACHE` module cache (CAUTION) | mixed | Env (`GOCACHE`/`GOMODCACHE`/`GOPATH`) with platform defaults; Sweep never runs `go`. |
 | `agent-artifacts` | `.codex/work_artifacts/*` quiet 7+ days + `.codex/sessions` month shards quiet 30+ days (whole-tree freshness, execute-time rechecked) | CAUTION | Task outputs; re-running the task regenerates them. Sub-10 MiB entries ignored. Live tasks never match. |
 | `browser-cache` | Per-profile `Cache`/`Code Cache`/`ShaderCache`/`GPUCache` + browser-level shader dirs (SAFE); per-profile `CacheStorage`/`Service Worker` origin storage + `OptGuideOnDeviceModel` weights (CAUTION), Chrome + Edge | mixed | Origin storage can hold offline app data. Weights are multi-gigabyte re-downloads. Close the browser first; files may be locked. |
 | `windows-update` | `SoftwareDistribution\Download`, `Windows.old` over 50 MiB | CAUTION + manual | Report-only: servicing state belongs to Windows Update/DISM. |

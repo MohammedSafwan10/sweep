@@ -1,0 +1,128 @@
+{
+  "dataset": "Isolated copies of real developer build artifacts and package caches",
+  "powershell_version": "7.6.7",
+  "sweep_version": "sweep 0.3.1",
+  "logical_bytes_removed_per_copy": 31429738876,
+  "target_paths": 14,
+  "ecosystems": [
+    "cargo",
+    "nextjs-build",
+    "flutter-build",
+    "js-caches",
+    "pub-cache"
+  ],
+  "repetitions": 1,
+  "trials": [
+    {
+      "trial": 1,
+      "order": [
+        "powershell",
+        "sweep"
+      ],
+      "metrics": {
+        "powershell": {
+          "preview_seconds": 1.4450783000002048,
+          "scan_seconds": 5.42554999999993,
+          "scan_kernel_seconds": 5.1363356,
+          "scan_files": 167684,
+          "scan_bytes": 31429822393.0,
+          "clean_seconds": 25.42458710000028,
+          "clean_kernel_seconds": 25.141118,
+          "errors": 0,
+          "observed_free_space_delta": 31768215552,
+          "verify_seconds": 0.0034662999996726285,
+          "protected_files": 19,
+          "verification_passed": true,
+          "clean_and_verify_seconds": 25.428053399999953
+        },
+        "sweep": {
+          "preview_seconds": 2.0820645000003424,
+          "scan_seconds": 0.6579450999997789,
+          "scan_files": 167684,
+          "scan_bytes": 31429822393,
+          "clean_seconds": 9.752752299999884,
+          "errors": 0,
+          "observed_free_space_delta": 31763013632,
+          "verify_seconds": 0.003074700000070152,
+          "protected_files": 19,
+          "verification_passed": true,
+          "clean_and_verify_seconds": 9.755826999999954
+        }
+      }
+    }
+  ],
+  "film_trial": 1,
+  "date": "2026-10-23",
+  "artifacts": [
+    {
+      "relative_target": "projects\\project-01\\build",
+      "family": "Flutter",
+      "audit_bytes": 7366465609
+    },
+    {
+      "relative_target": "projects\\project-02\\build",
+      "family": "Flutter",
+      "audit_bytes": 5161556392
+    },
+    {
+      "relative_target": "cache\\npm\\_cacache",
+      "family": "npm",
+      "audit_bytes": 4527141356
+    },
+    {
+      "relative_target": "projects\\project-03\\build",
+      "family": "Flutter",
+      "audit_bytes": 3641733783
+    },
+    {
+      "relative_target": "projects\\project-01\\.dart_tool",
+      "family": "Flutter",
+      "audit_bytes": 2779445129
+    },
+    {
+      "relative_target": "projects\\project-04\\target",
+      "family": "Rust",
+      "audit_bytes": 1363933461
+    },
+    {
+      "relative_target": "projects\\project-05\\.next",
+      "family": "Next.js",
+      "audit_bytes": 1297231409
+    },
+    {
+      "relative_target": "projects\\project-06\\build",
+      "family": "Flutter",
+      "audit_bytes": 1163969172
+    },
+    {
+      "relative_target": "projects\\project-02\\.dart_tool",
+      "family": "Flutter",
+      "audit_bytes": 974504044
+    },
+    {
+      "relative_target": "cache\\pub\\hosted",
+      "family": "Dart packages",
+      "audit_bytes": 966771398
+    },
+    {
+      "relative_target": "cache\\cargo\\registry\\src",
+      "family": "Cargo packages",
+      "audit_bytes": 757325781
+    },
+    {
+      "relative_target": "projects\\project-03\\.dart_tool",
+      "family": "Flutter",
+      "audit_bytes": 674071425
+    },
+    {
+      "relative_target": "projects\\project-07\\.next",
+      "family": "Next.js",
+      "audit_bytes": 451733891
+    },
+    {
+      "relative_target": "projects\\project-08\\target",
+      "family": "Rust",
+      "audit_bytes": 303856026
+    }
+  ]
+}

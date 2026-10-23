@@ -6,7 +6,7 @@ This is the machine contract. Human docs: `README.md`, `docs/SAFETY.md`.
 
 1. **Read-only first.** Always run `scan` / `detectors` and show the human the plan before anything destructive.
 2. **`clean` is dry-run by default.** `--execute` requires `--yes` when combined with `--json`. Never pass `--yes` without showing the plan to the human first.
-3. **Never `--permanent`, never `--force`** without explicit human approval in this session. `DANGER` items are off-limits by default (v1 ships zero `Danger` findings — the gate is covered by unit tests for future detectors; the Docker vhdx is `Caution`+manual and always skipped, never auto-deleted).
+3. **Never `--permanent`, never `--force`** without explicit human approval in this session. `DANGER` items are off-limits by default (no current detector emits `Danger` — the gate is covered by unit tests for future detectors; the Docker vhdx is `Caution`+manual and always skipped, never auto-deleted).
 4. **Pin `schema_version`.** If `schema_version != 1`, stop and report — the contract changed.
 5. **Parse JSON, never screen-scrape** human output.
 6. Prefer `--id <detector>` to scope deletes (e.g. `--id pub-cache`). Unknown `--id` values exit 1 — treat as a typo signal, not as "nothing found".
@@ -110,6 +110,15 @@ for affected volumes. It is empty in dry runs. These measurements include
 other system activity and Recycle Bin moves may show little immediate gain.
 
 ## Recommended agent flow
+
+**Execution currently rescans.** A dry-run JSON file is a report, not an executable
+plan. There is no saved-plan input option. A later `clean --execute --json --yes`
+discovers fresh findings and executes them without another interactive confirmation.
+Approval of a dry-run report does not bind the later command to those exact paths.
+Keep approved scope narrow, stop builds/installers, and prefer interactive
+`clean --execute` when a human must review the exact fresh plan: that command shows
+its in-memory plan, confirms, then executes the displayed plan. Executing a
+previously saved reviewed plan is not currently supported.
 
 ```sh
 sweep detectors --json > findings.json          # 1. discover
