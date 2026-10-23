@@ -16,11 +16,15 @@ developer artifacts, preview cleanup, and report the result as structured JSON.
 
 [Open the 40-second video](https://github.com/MohammedSafwan10/sweep/blob/main/docs/assets/sweep-demo.mp4)
 
+
 PowerShell 7 and Sweep on isolated copies of **31.43 GB of real build output and package caches**.
 This is an edited agent walkthrough using measured command results;
 accelerated sections are labeled. Original projects were not deleted.
 
 ## Install
+
+
+
 
 Download `sweep.exe` from [Releases](https://github.com/MohammedSafwan10/sweep/releases),
 place it in a directory on your agent's `PATH`, and check `sweep --version`.
