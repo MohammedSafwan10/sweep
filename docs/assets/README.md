@@ -2,7 +2,9 @@
 
 `sweep-demo.mp4` is a 40-second, 1920×1080, 60 fps edited terminal walkthrough.
 Its measured-command dataset and limitations are documented in
-[BENCHMARKS.md](../BENCHMARKS.md). `sweep-demo.png` is a still from that video.
+[BENCHMARKS.md](../BENCHMARKS.md). `sweep-demo.gif` is a looping 1280×720,
+12 fps silent version for inline README playback, made with FFmpeg palette
+generation/use (64 colors, Bayer dithering). The MP4 retains the audio and 60 fps.
 Terminal artwork uses local Cascadia Mono / Segoe UI; no external illustration
 was used. The interface is a reconstruction, not a shipping Sweep GUI or an
 unedited live AI session.

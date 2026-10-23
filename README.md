@@ -14,6 +14,8 @@ developer artifacts, preview cleanup, and report the result as structured JSON.
 
 ### Demo: 31.43 GB cleanup — PowerShell 7 vs Sweep
 
+![Animated cleanup comparison between PowerShell 7 and Sweep](docs/assets/sweep-demo.gif)
+
 [Open the 40-second video](https://github.com/MohammedSafwan10/sweep/blob/main/docs/assets/sweep-demo.mp4)
 
 
