@@ -12,10 +12,11 @@ developer artifacts, preview cleanup, and report the result as structured JSON.
 **Scan → review → approve → clean → verify.** Cleanup is a dry run unless
 `--execute` is supplied, and uses the Recycle Bin or system trash by default.
 
-[![Watch the Sweep demo](docs/assets/sweep-demo.png)](docs/assets/sweep-demo.mp4)
+### Demo: 31.43 GB cleanup — PowerShell 7 vs Sweep
 
-[Watch the 40-second comparison](docs/assets/sweep-demo.mp4): PowerShell 7 and
-Sweep on isolated copies of **31.43 GB of real build output and package caches**.
+[Open the 40-second video](https://github.com/MohammedSafwan10/sweep/blob/main/docs/assets/sweep-demo.mp4)
+
+PowerShell 7 and Sweep on isolated copies of **31.43 GB of real build output and package caches**.
 This is an edited agent walkthrough using measured command results;
 accelerated sections are labeled. Original projects were not deleted.
 
