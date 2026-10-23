@@ -16,9 +16,11 @@ use crate::model::{
     CleanAction, CleanOptions, CleanReceipt, Disposition, Finding, PlannedItem, RemovedItem,
     SkippedItem, SCHEMA_VERSION,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CleanPlan {
     pub items: Vec<PlannedItem>,
     pub total_bytes: u64,
@@ -142,11 +144,20 @@ pub fn plan(findings: &[Finding], opts: &CleanOptions) -> CleanPlan {
                     items.push(skip(finding, "duplicate path"));
                     continue;
                 }
+                let snapshot = match crate::snapshot::capture(&path) {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        items.push(skip(finding, &format!("cannot snapshot target: {error}")));
+                        continue;
+                    }
+                };
                 let mut finding = finding.clone();
                 finding.action = CleanAction::RemovePath { path };
-                total_bytes += finding.bytes;
+                finding.bytes = snapshot.bytes;
+                total_bytes = total_bytes.saturating_add(finding.bytes);
                 items.push(PlannedItem {
                     finding,
+                    snapshot: Some(snapshot),
                     disposition: Disposition::Remove {
                         via: if opts.to_trash {
                             "trash".to_string()
@@ -222,6 +233,7 @@ fn validate_ancestors(path: &Path) -> Result<(), String> {
 fn skip(finding: &Finding, reason: &str) -> PlannedItem {
     PlannedItem {
         finding: finding.clone(),
+        snapshot: None,
         disposition: Disposition::Skipped {
             reason: reason.to_string(),
         },
@@ -257,6 +269,8 @@ struct Job {
     bytes: u64,
     label: String,
     safety: crate::model::Safety,
+    snapshot: crate::snapshot::TreeSnapshot,
+    detector_id: String,
 }
 
 /// Execute with optional per-item progress notifications.
@@ -395,6 +409,20 @@ pub fn execute_with_progress(
             }
             Ok(meta) => meta.is_dir(),
         };
+        let Some(snapshot) = &item.snapshot else {
+            receipt.errors.push(format!(
+                "{}: missing reviewed snapshot; create a new plan",
+                item.finding.label
+            ));
+            continue;
+        };
+        if (via == "trash") != opts.to_trash {
+            receipt.errors.push(format!(
+                "{}: deletion mode differs from reviewed plan",
+                item.finding.label
+            ));
+            continue;
+        }
         jobs.push(Job {
             path,
             is_dir,
@@ -402,16 +430,13 @@ pub fn execute_with_progress(
             bytes: item.finding.bytes,
             label: item.finding.label.clone(),
             safety: item.finding.safety,
+            snapshot: snapshot.clone(),
+            detector_id: item.finding.detector_id.clone(),
         });
     }
-    // Phase 2: destructive calls. Each job re-stats its tree right before
-    // deleting (drift guard + honest receipt) and permanent plans run jobs
-    // in parallel: independent tree roots delete concurrently, so the
-    // re-stat walk overlaps with other jobs' deletes instead of adding a
-    // full sequential pre-pass (the v0.1.0 behaviour that made multi-GB
-    // cleanups crawl: walk everything, then delete everything, one item at
-    // a time). Trash plans stay sequential — the platform trash is a shell
-    // service (COM IFileOperation on Windows).
+    // Phase 2: each target is fully fingerprinted again immediately before
+    // deletion. Independent permanent jobs still run in parallel. Trash jobs
+    // stay sequential because the Windows shell service uses COM apartments.
     if opts.execute && !jobs.is_empty() {
         let mut before = std::collections::BTreeMap::new();
         for job in &jobs {
@@ -425,17 +450,34 @@ pub fn execute_with_progress(
         let done = std::sync::atomic::AtomicUsize::new(0);
         let run = |job: &Job| -> (Result<RemovedItem, String>, Vec<String>) {
             let mut warnings: Vec<String> = Vec::new();
+            let valid = validate_ancestors(&job.path).and_then(|()| {
+                let now = crate::snapshot::capture(&job.path).map_err(|error| error.to_string())?;
+                if now != job.snapshot {
+                    return Err(
+                        "contents or identity changed since preview; create and approve a new plan"
+                            .to_string(),
+                    );
+                }
+                if (job.detector_id == "pycache"
+                    && crate::detectors::pycache::backed_bytes(&job.path).is_none())
+                    || (job.detector_id == "temp" && !crate::detectors::temp::is_stale(&job.path))
+                    || (job.detector_id == "agent-artifacts"
+                        && !crate::detectors::agent::is_quiet(&job.path))
+                {
+                    return Err("detector safety conditions changed since preview".to_string());
+                }
+                Ok(())
+            });
+            if let Err(error) = valid {
+                return (
+                    Err(format!("{} ({}): {error}", job.label, job.path.display())),
+                    warnings,
+                );
+            }
             let outcome: Result<u64, String> = if job.via == "trash" {
-                // Trash keeps a pre-walk: the OS moves the tree (no per-file
-                // callback), so the walk is the only way to size the receipt.
-                let bytes_now = if job.is_dir {
-                    crate::scanner::size_of_dir(&job.path).0
-                } else {
-                    std::fs::symlink_metadata(&job.path)
-                        .map(|m| m.len())
-                        .unwrap_or(job.bytes)
-                };
-                delete_path(&job.path, job.is_dir, true).map(|()| bytes_now)
+                // Use the just-verified size; an extra sizing walk would widen
+                // the interval between the drift check and the OS move.
+                delete_path(&job.path, job.is_dir, true).map(|()| job.snapshot.bytes)
             } else if job.is_dir {
                 // Parallel one-pass delete: bytes counted while unlinking.
                 let (bytes, mut errs) = delete_tree(&job.path);
@@ -769,22 +811,23 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn parallel_delete_continues_past_locked_file() {
+    fn locked_target_is_rejected_without_deleting_free_siblings() {
         use std::os::windows::fs::OpenOptionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("tree");
         fs::create_dir_all(root.join("sub")).unwrap();
         fs::write(root.join("locked.bin"), vec![0u8; 8]).unwrap();
         fs::write(root.join("sub").join("free.bin"), vec![0u8; 16]).unwrap();
+        let findings = vec![finding("tree", &root, 0, Safety::Safe)];
+        let plan = plan(&findings, &opts());
         let handle = fs::OpenOptions::new()
             .read(true)
             .share_mode(0)
             .open(root.join("locked.bin"))
             .unwrap();
-        let findings = vec![finding("tree", &root, 0, Safety::Safe)];
-        let receipt = clean(&findings, &opts());
-        // Free sibling deleted; the locked file blocks only its own entry.
-        assert!(!root.join("sub").exists());
+        let receipt = execute(&plan, &opts());
+        // The whole target is refused when its reviewed snapshot cannot be verified.
+        assert!(root.join("sub").join("free.bin").exists());
         assert!(root.join("locked.bin").exists());
         assert!(!receipt.errors.is_empty());
         assert!(receipt.removed.is_empty());

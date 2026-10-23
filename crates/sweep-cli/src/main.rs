@@ -85,6 +85,12 @@ enum Command {
         /// Actually delete. Without it: plan + report only.
         #[arg(long)]
         execute: bool,
+        /// Save a fingerprinted dry-run plan for later review (never overwrites).
+        #[arg(long, conflicts_with_all = ["execute", "from_plan"])]
+        save_plan: Option<PathBuf>,
+        /// Use a saved plan without discovering new cleanup targets.
+        #[arg(long, conflicts_with_all = ["save_plan", "id", "roots", "no_docker"])]
+        from_plan: Option<PathBuf>,
         /// Skip the confirmation prompt (required together with --json --execute).
         #[arg(long)]
         yes: bool,
@@ -283,6 +289,8 @@ fn run() -> Result<i32> {
         }
         Command::Clean {
             execute,
+            save_plan,
+            from_plan,
             yes,
             json,
             permanent,
@@ -297,18 +305,45 @@ fn run() -> Result<i32> {
             if json && execute && !yes {
                 bail!("refusing --execute --json without --yes: agents must opt in explicitly");
             }
-            validate_ids(&id)?;
-            let ctx = build_ctx(&roots, no_docker)?;
-            let findings = detectors::scan_selected(&ctx, &id);
             let opts = CleanOptions {
                 execute,
                 to_trash: !permanent,
                 include,
                 force_danger: force,
             };
+            let (plan, plan_id) = if let Some(path) = &from_plan {
+                let saved = sweep_core::saved_plan::SavedPlan::read(path)
+                    .with_context(|| format!("cannot load reviewed plan {}", path.display()))?;
+                let ids: Vec<_> = saved
+                    .plan
+                    .items
+                    .iter()
+                    .map(|item| item.finding.detector_id.clone())
+                    .collect();
+                validate_ids(&ids)?;
+                (saved.plan, Some(saved.plan_id))
+            } else {
+                validate_ids(&id)?;
+                let ctx = build_ctx(&roots, no_docker)?;
+                let findings = detectors::scan_selected(&ctx, &id);
+                let plan = cleaner::plan(&findings, &opts);
+                if let Some(path) = &save_plan {
+                    let saved = sweep_core::saved_plan::SavedPlan::new(plan)?;
+                    saved
+                        .write_new(path)
+                        .with_context(|| format!("cannot save plan {}", path.display()))?;
+                    (saved.plan, Some(saved.plan_id))
+                } else {
+                    (plan, None)
+                }
+            };
             if json {
-                let receipt = cleaner::clean(&findings, &opts);
-                println!("{}", serde_json::to_string_pretty(&receipt)?);
+                let receipt = cleaner::execute(&plan, &opts);
+                let mut output = serde_json::to_value(&receipt)?;
+                if let Some(id) = &plan_id {
+                    output["plan_id"] = serde_json::json!(id);
+                }
+                println!("{}", serde_json::to_string_pretty(&output)?);
                 return Ok(if receipt.errors.is_empty() { 0 } else { 2 });
             }
             // Human flow: always show the dry-run plan first, confirm, then act.
@@ -316,9 +351,11 @@ fn run() -> Result<i32> {
                 execute: false,
                 ..opts
             };
-            let plan = cleaner::plan(&findings, &opts);
             let preview = cleaner::execute(&plan, &dry);
             print_receipt_human(&preview, &dry);
+            if let Some(id) = &plan_id {
+                println!("Plan ID: {id}");
+            }
             if !execute || preview.removed.is_empty() {
                 return Ok(0);
             }

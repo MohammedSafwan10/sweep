@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.4.0 — 2026-10-23
+
+- `clean --save-plan FILE` writes a checksummed, fingerprinted preview without
+  overwriting an existing file. `clean --from-plan FILE` reuses only its reviewed
+  targets, without detector rediscovery. CLI receipts echo the saved `plan_id`.
+- All cleanup plans now snapshot full file contents, entry metadata, and filesystem
+  identities before review. Each target is rechecked immediately before deletion;
+  changed or unreadable targets are refused whole, including after interactive
+  confirmation. Other unchanged targets can proceed. This is not an atomic
+  filesystem transaction; stop writers before cleaning.
+- Saved-plan execution preserves deletion-mode and safety gates. Plans inside
+  deletion targets, malformed/checksum-modified plans, and plans missing snapshots
+  are refused. Plan files are trusted local input, not signed authorization tokens.
+- Full-content validation adds I/O. The published v0.3.1 demo/benchmark predates it.
+
 ## v0.3.1 — 2026-09-26
 
 - npm cleanup now removes only the regenerable `_cacache` download store. Running tools installed under `_npx` remain available; moving the whole npm cache could fail on Windows while those tools were active.

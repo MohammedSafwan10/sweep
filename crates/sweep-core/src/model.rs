@@ -189,6 +189,9 @@ impl Default for CleanOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlannedItem {
     pub finding: Finding,
+    /// Full tree fingerprint captured before review. Missing snapshots cannot execute.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<crate::snapshot::TreeSnapshot>,
     #[serde(flatten)]
     pub disposition: Disposition,
 }

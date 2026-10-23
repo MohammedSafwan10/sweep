@@ -4,6 +4,10 @@ Measured on 23 October 2026 using Sweep 0.3.1 and PowerShell 7.6.7 on Windows 11
 Pro, Intel Core i7-12700F (12 cores / 20 logical processors). Both copies lived on
 the same D: volume. This is one paired local run, not a cold-cache benchmark suite.
 
+These are historical **v0.3.1** results. v0.4.0 adds full-content fingerprints
+before review and again before deletion; the cleanup timings below do not include
+that additional validation and must not be quoted as current-version performance.
+
 ## Dataset
 
 Two isolated copies of existing Flutter `build/` and `.dart_tool/`, Rust `target/`,

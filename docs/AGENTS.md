@@ -20,6 +20,7 @@ sweep review <PATH> [--top 20] [--min-size 500MB] [--all-detectors] [--strict] [
 sweep detectors [--roots DIR...] [--no-docker] [--json]
 sweep clean [--id ID...] [--only safe|caution|all] [--force] [--permanent]
             [--execute] [--yes] [--json] [--roots DIR...] [--no-docker]
+            [--save-plan FILE | --from-plan FILE]
 sweep bin --drive C [--drive D...] [--execute] [--yes] [--json]  # Windows
 ```
 
@@ -111,22 +112,34 @@ other system activity and Recycle Bin moves may show little immediate gain.
 
 ## Recommended agent flow
 
-**Execution currently rescans.** A dry-run JSON file is a report, not an executable
-plan. There is no saved-plan input option. A later `clean --execute --json --yes`
-discovers fresh findings and executes them without another interactive confirmation.
-Approval of a dry-run report does not bind the later command to those exact paths.
-Keep approved scope narrow, stop builds/installers, and prefer interactive
-`clean --execute` when a human must review the exact fresh plan: that command shows
-its in-memory plan, confirms, then executes the displayed plan. Executing a
-previously saved reviewed plan is not currently supported.
+Use `--save-plan` for a reviewed preview that must bind a later execution. It is
+dry-run only and refuses to overwrite files. `--from-plan` does not discover new
+targets and cannot be combined with `--id`, `--roots`, or `--no-docker`. Execution
+rechecks each complete content fingerprint immediately before deleting that target;
+changed or unreadable targets produce `errors[]` / exit 2 and remain untouched.
+Missing targets are skipped. Independent unchanged targets can still succeed.
 
 ```sh
 sweep detectors --json > findings.json          # 1. discover
-sweep clean --json > plan.json                  # 2. dry-run plan (default safe-only)
+sweep clean --id nextjs-build --save-plan plan.json --json > preview.json
 # 3. show the human: total + top items + what stays untouched
-sweep clean --json --execute --yes > receipt.json   # 4. only after approval
+sweep clean --from-plan plan.json --json --execute --yes > receipt.json
 # 5. report receipt.freed_bytes; surface skipped[]/errors[]
 ```
+
+`preview.json` is a receipt; `plan.json` is the executable saved-plan envelope:
+`{plan_schema_version: 1, plan_id, plan: {items, total_bytes}}`. Each removal item
+contains the finding, deletion mode, and `{sha256, entries, bytes}` snapshot.
+CLI receipts from save/load flows include additive `plan_id`; compare it with the
+reviewed file. Only trust locally reviewed plans: the checksum is not a signature.
+Plan files may reveal paths. `--save-plan` cannot store its file inside a selected
+target. Retrying execution of a changed target requires a fresh plan and approval.
+
+A permanent saved plan needs `--permanent` at both creation and execution, with
+explicit human approval. Existing safety flags still apply. Full hashing costs I/O;
+stop builds/installers before preview. No snapshot can eliminate a write racing
+after the final check. A plain `clean --execute` still rescans; use `--from-plan`
+for exact reviewed targets. Earlier binaries without these flags must be upgraded.
 
 For "what's big" questions: `sweep scan <PATH> --json --top 20`.
 For targeted work: `sweep clean --id cargo --id pub-cache --json` to preview one ecosystem.

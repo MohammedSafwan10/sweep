@@ -60,7 +60,10 @@ Start with a scan and a scoped preview:
 ```powershell
 sweep scan D:\Dev --top 20 --json
 sweep detectors --roots D:\Dev --json
-sweep clean --roots D:\Dev --id nextjs-build --id flutter-build --json
+sweep clean --roots D:\Dev --id nextjs-build --id flutter-build --save-plan cleanup.json --json
+# Review cleanup.json and show the selected paths to the human.
+# Only after approval; trash remains the default:
+sweep clean --from-plan cleanup.json --execute --yes --json
 ```
 
 `--roots` controls project-artifact searches; global cache detectors still use
@@ -68,13 +71,23 @@ their configured cache locations. Choose detector IDs deliberately when previewi
 or cleaning. See the [detector reference](docs/DETECTORS.md) for IDs and cache-location
 environment variables.
 
-**A separate execution command rescans.** Sweep does not currently accept a saved
-reviewed plan as input. Interactive `clean --execute` displays a freshly built plan,
-asks for confirmation, then executes that in-memory plan. An agent using
-`--execute --json --yes` receives no new interactive confirmation; a prior dry-run
-file is not bound to that execution. Stop builds/installers, keep the approved
-scope narrow, and use interactive confirmation when the fresh exact plan must be
-reviewed. See [safety details](docs/SAFETY.md).
+**Execute the plan you reviewed.** `--save-plan` captures full file-content hashes,
+entry metadata, and filesystem identities. `--from-plan` loads those exact targets
+without discovering new ones. Before deleting each target, Sweep compares its
+current tree with the snapshot. Changed or unreadable targets are left intact and
+reported as errors; create and approve a new plan to retry. This also protects
+interactive `clean --execute` between its confirmation prompt and execution.
+
+Saved plans require **v0.4.0 or a current source build**; check `sweep clean --help`
+if using an older downloaded release. Plan files are local trusted input, not
+signed authorization tokens. They cannot be overwritten by `--save-plan` or stored
+inside a selected target. A plain `clean --execute` still discovers a fresh plan;
+it does not use a previous dry-run receipt automatically.
+
+Content hashing reads every file and adds I/O to previews and execution. Stop
+builds/installers before cleaning: a change after the final check, during recursive
+deletion, is still possible. This is drift detection, not an atomic filesystem
+transaction. See [safety details](docs/SAFETY.md).
 
 ## What it recognizes
 
@@ -111,6 +124,9 @@ state and other system activity may influence results. These are single-run
 observations, not a general speed guarantee.
 
 [Methodology, exact timings, and sanitized results](docs/BENCHMARKS.md).
+
+These measurements and the demo use **v0.3.1**, before full-content snapshot
+validation. They are historical results, not timings for the v0.4.0 cleaner.
 
 ## Usage
 

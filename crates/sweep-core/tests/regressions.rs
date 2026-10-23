@@ -107,6 +107,7 @@ fn execute_rejects_unknown_method_and_unapproved_danger() {
         let plan = cleaner::CleanPlan {
             items: vec![PlannedItem {
                 finding: item,
+                snapshot: None,
                 disposition: Disposition::Remove { via: via.into() },
             }],
             total_bytes: 16,
