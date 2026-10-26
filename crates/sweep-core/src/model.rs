@@ -217,6 +217,15 @@ pub struct CleanReceipt {
     /// Available space on affected volumes, measured around execution.
     /// Empty for dry runs. Other processes may also change these figures.
     pub space_changes: Vec<SpaceChange>,
+    /// Sums of per-target elapsed times; parallel targets can overlap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_timings: Option<ExecutionTimings>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionTimings {
+    pub recheck_worker_seconds: f64,
+    pub deletion_worker_seconds: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -78,8 +78,9 @@ current tree with the snapshot. Changed or unreadable targets are left intact an
 reported as errors; create and approve a new plan to retry. This also protects
 interactive `clean --execute` between its confirmation prompt and execution.
 
-Saved plans require **v0.4.0 or a current source build**; check `sweep clean --help`
-if using an older downloaded release. Plan files are local trusted input, not
+Use **v0.5.0 or newer** for parallel content checks and saved-plan schema 2.
+Plans made by v0.4.0 require a fresh preview and approval after upgrading.
+Check `sweep clean --help` if using an older downloaded release. Plan files are local trusted input, not
 signed authorization tokens. They cannot be overwritten by `--save-plan` or stored
 inside a selected target. A plain `clean --execute` still discovers a fresh plan;
 it does not use a previous dry-run receipt automatically.
@@ -88,6 +89,12 @@ Content hashing reads every file and adds I/O to previews and execution. Stop
 builds/installers before cleaning: a change after the final check, during recursive
 deletion, is still possible. This is drift detection, not an atomic filesystem
 transaction. See [safety details](docs/SAFETY.md).
+
+Human cleanup shows elapsed time and fingerprint progress. Agents can add
+`--progress` to write these updates to stderr while keeping stdout valid JSON.
+Clean JSON receipts include stage `timings`; executed targets also report
+`execution_timings` for rechecking and deletion. Hashing uses at most eight workers,
+with deterministic results across worker counts. [Performance measurements](docs/PERFORMANCE.md).
 
 ## What it recognizes
 
@@ -126,7 +133,7 @@ observations, not a general speed guarantee.
 [Methodology, exact timings, and sanitized results](docs/BENCHMARKS.md).
 
 These measurements and the demo use **v0.3.1**, before full-content snapshot
-validation. They are historical results, not timings for the v0.4.0 cleaner.
+validation. They are historical results, not timings for the current cleaner.
 
 ## Usage
 

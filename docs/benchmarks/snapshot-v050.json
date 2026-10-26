@@ -1,0 +1,159 @@
+{
+  "date": "2026-10-26",
+  "platform": "Windows 11 Pro",
+  "cpu": "Intel Core i7-12700F",
+  "baseline": "v0.4.0 snapshot implementation",
+  "candidate": "v0.5.0 snapshot implementation",
+  "method": "Three sequential paired rounds, reversing order on round 2; warm caches, no cache flush, local system activity uncontrolled. Read-only snapshot capture only, not cleanup or process startup.",
+  "datasets": {
+    "small-files": "D: 4,000 files of 4,096 bytes in 40 directories",
+    "large-files": "D: eight files of 33,554,432 bytes",
+    "dart-hosted-cache": "C: real Dart Pub hosted packages, 69,698 files and 17,801 directories including root"
+  },
+  "samples": [
+    {
+      "round": 1,
+      "version": "baseline",
+      "dataset": "small-files",
+      "seconds": 0.2826083,
+      "bytes": 16384000,
+      "entries": 4041
+    },
+    {
+      "round": 1,
+      "version": "baseline",
+      "dataset": "large-files",
+      "seconds": 0.1559063,
+      "bytes": 268435456,
+      "entries": 9
+    },
+    {
+      "round": 1,
+      "version": "baseline",
+      "dataset": "dart-hosted-cache",
+      "seconds": 27.1613999,
+      "bytes": 1078336677,
+      "entries": 87499
+    },
+    {
+      "round": 1,
+      "version": "candidate",
+      "dataset": "small-files",
+      "seconds": 0.0785241,
+      "bytes": 16384000,
+      "entries": 4041
+    },
+    {
+      "round": 1,
+      "version": "candidate",
+      "dataset": "large-files",
+      "seconds": 0.0262287,
+      "bytes": 268435456,
+      "entries": 9
+    },
+    {
+      "round": 1,
+      "version": "candidate",
+      "dataset": "dart-hosted-cache",
+      "seconds": 5.1014509,
+      "bytes": 1078336677,
+      "entries": 87499
+    },
+    {
+      "round": 2,
+      "version": "candidate",
+      "dataset": "small-files",
+      "seconds": 0.081635,
+      "bytes": 16384000,
+      "entries": 4041
+    },
+    {
+      "round": 2,
+      "version": "candidate",
+      "dataset": "large-files",
+      "seconds": 0.0372247,
+      "bytes": 268435456,
+      "entries": 9
+    },
+    {
+      "round": 2,
+      "version": "candidate",
+      "dataset": "dart-hosted-cache",
+      "seconds": 3.7578418,
+      "bytes": 1078336677,
+      "entries": 87499
+    },
+    {
+      "round": 2,
+      "version": "baseline",
+      "dataset": "small-files",
+      "seconds": 0.2823042,
+      "bytes": 16384000,
+      "entries": 4041
+    },
+    {
+      "round": 2,
+      "version": "baseline",
+      "dataset": "large-files",
+      "seconds": 0.1828302,
+      "bytes": 268435456,
+      "entries": 9
+    },
+    {
+      "round": 2,
+      "version": "baseline",
+      "dataset": "dart-hosted-cache",
+      "seconds": 12.914324,
+      "bytes": 1078336677,
+      "entries": 87499
+    },
+    {
+      "round": 3,
+      "version": "baseline",
+      "dataset": "small-files",
+      "seconds": 0.3863623,
+      "bytes": 16384000,
+      "entries": 4041
+    },
+    {
+      "round": 3,
+      "version": "baseline",
+      "dataset": "large-files",
+      "seconds": 0.1790341,
+      "bytes": 268435456,
+      "entries": 9
+    },
+    {
+      "round": 3,
+      "version": "baseline",
+      "dataset": "dart-hosted-cache",
+      "seconds": 22.1947389,
+      "bytes": 1078336677,
+      "entries": 87499
+    },
+    {
+      "round": 3,
+      "version": "candidate",
+      "dataset": "small-files",
+      "seconds": 0.0854639,
+      "bytes": 16384000,
+      "entries": 4041
+    },
+    {
+      "round": 3,
+      "version": "candidate",
+      "dataset": "large-files",
+      "seconds": 0.0287784,
+      "bytes": 268435456,
+      "entries": 9
+    },
+    {
+      "round": 3,
+      "version": "candidate",
+      "dataset": "dart-hosted-cache",
+      "seconds": 5.167025,
+      "bytes": 1078336677,
+      "entries": 87499
+    }
+  ]
+}

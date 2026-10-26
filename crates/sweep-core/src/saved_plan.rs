@@ -9,7 +9,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-const PLAN_SCHEMA_VERSION: u32 = 1;
+const PLAN_SCHEMA_VERSION: u32 = 2;
 const MAX_PLAN_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -34,7 +34,7 @@ impl SavedPlan {
 
     pub fn validate(&self) -> io::Result<()> {
         if self.plan_schema_version != PLAN_SCHEMA_VERSION {
-            return Err(io::Error::other("unsupported saved-plan schema version"));
+            return Err(io::Error::other("unsupported saved-plan schema version; create and review a new plan with this Sweep version"));
         }
         if checksum(self.plan_schema_version, &self.plan)? != self.plan_id {
             return Err(io::Error::other(

@@ -109,11 +109,12 @@ fn tampered_unsupported_and_unfingerprinted_saved_plans_fail_closed() {
     fs::write(root.join("entry"), b"old!").unwrap();
     let saved = SavedPlan::new(reviewed(&root)).unwrap();
     let value = serde_json::to_value(&saved).unwrap();
-    for mutation in ["checksum", "schema", "snapshot", "path"] {
+    for mutation in ["checksum", "schema", "old-schema", "snapshot", "path"] {
         let mut value = value.clone();
         match mutation {
             "checksum" => value["plan_id"] = "invalid".into(),
             "schema" => value["plan_schema_version"] = 99.into(),
+            "old-schema" => value["plan_schema_version"] = 1.into(),
             "snapshot" => value["plan"]["items"][0]["snapshot"] = serde_json::Value::Null,
             "path" => value["plan"]["items"][0]["finding"]["action"]["path"] = "unreviewed".into(),
             _ => unreachable!(),

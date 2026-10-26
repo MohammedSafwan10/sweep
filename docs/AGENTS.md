@@ -20,7 +20,7 @@ sweep review <PATH> [--top 20] [--min-size 500MB] [--all-detectors] [--strict] [
 sweep detectors [--roots DIR...] [--no-docker] [--json]
 sweep clean [--id ID...] [--only safe|caution|all] [--force] [--permanent]
             [--execute] [--yes] [--json] [--roots DIR...] [--no-docker]
-            [--save-plan FILE | --from-plan FILE]
+            [--save-plan FILE | --from-plan FILE] [--progress]
 sweep bin --drive C [--drive D...] [--execute] [--yes] [--json]  # Windows
 ```
 
@@ -106,6 +106,12 @@ measure before handing the tree to the OS. `removed[]` lists every item
 that fully succeeded — `sum(removed[].bytes) == freed_bytes` on runs
 without partial failures. Interactive `--execute` runs print per-item
 progress to **stderr**; `--json` output on stdout stays pure.
+Add `--progress` with `--json` for one-second stage/fingerprint updates on stderr.
+Clean receipts include additive `timings` with discovery, planning, execution, and
+total seconds. Executed cleanups include `execution_timings`: summed per-target
+`recheck_worker_seconds` and `deletion_worker_seconds`. Targets may overlap in time,
+so these worker sums are not wall-clock totals. Zero discovery time on `--from-plan`
+means rediscovery was skipped, not that the original scan was instantaneous.
 `space_changes[]` records available bytes before and after an executed clean
 for affected volumes. It is empty in dry runs. These measurements include
 other system activity and Recycle Bin moves may show little immediate gain.
@@ -128,7 +134,7 @@ sweep clean --from-plan plan.json --json --execute --yes > receipt.json
 ```
 
 `preview.json` is a receipt; `plan.json` is the executable saved-plan envelope:
-`{plan_schema_version: 1, plan_id, plan: {items, total_bytes}}`. Each removal item
+`{plan_schema_version: 2, plan_id, plan: {items, total_bytes}}`. Each removal item
 contains the finding, deletion mode, and `{sha256, entries, bytes}` snapshot.
 CLI receipts from save/load flows include additive `plan_id`; compare it with the
 reviewed file. Only trust locally reviewed plans: the checksum is not a signature.
@@ -140,6 +146,9 @@ explicit human approval. Existing safety flags still apply. Full hashing costs I
 stop builds/installers before preview. No snapshot can eliminate a write racing
 after the final check. A plain `clean --execute` still rescans; use `--from-plan`
 for exact reviewed targets. Earlier binaries without these flags must be upgraded.
+v0.5.0 uses deterministic per-entry SHA-256 digests and a bounded shared hashing
+pool. v0.4.0 schema-1 saved plans are rejected: generate and approve a new plan.
+Receipt `schema_version` remains 1; saved-plan versions are a separate contract.
 
 For "what's big" questions: `sweep scan <PATH> --json --top 20`.
 For targeted work: `sweep clean --id cargo --id pub-cache --json` to preview one ecosystem.

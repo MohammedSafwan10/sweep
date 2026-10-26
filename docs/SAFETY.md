@@ -40,7 +40,8 @@ its exact targets, safety labels, snapshots, and deletion mode. After approval,
 Changing deletion mode after review is refused. Do not edit a reviewed plan;
 generate and approve a new file instead.
 
-Saved-plan schema version 1 is separate from receipt `schema_version: 1`.
+Saved-plan schema version 2 is separate from receipt `schema_version: 1`.
+v0.4.0 schema-1 plans are rejected; recreate and review them after upgrading.
 The SHA-256 `plan_id` detects accidental edits and is echoed in CLI receipts. It is
 not a signature: someone who can modify a plan can also recompute its checksum.
 Only execute plan files you trust and have reviewed. JSON fields do not establish
@@ -58,6 +59,15 @@ last check. Stop writers: a new file arriving during deletion may still be remov
 and a recursive deletion error can occur after some children were removed.
 Trash receipts use the just-verified logical byte count; permanent receipts count
 bytes while unlinking. Neither is a promise of physically reclaimed disk space.
+
+v0.5.0 hashes full contents with a shared pool of at most eight workers. Each
+entry includes its relative name, type, metadata, filesystem identity, and (for a
+file) content SHA-256. Entry hashes are folded in deterministic traversal order.
+Workers reuse the read handle for identity/metadata checks; separate identity
+probes request only metadata access on Windows. No-follow opens reject final-path
+links, and directories are revalidated after all file hashes finish. Inventory
+memory scales with entry count; file contents are streamed, never kept in memory.
+Parallel checks do not turn this into an atomic deletion transaction.
 
 ## What sweep will never do
 

@@ -29,6 +29,14 @@ pub struct CleanPlan {
 /// Build the plan: filter by safety level, refuse links and protected
 /// paths, drop vanished paths, total bytes.
 pub fn plan(findings: &[Finding], opts: &CleanOptions) -> CleanPlan {
+    plan_with_snapshot_progress(findings, opts, None)
+}
+
+pub fn plan_with_snapshot_progress(
+    findings: &[Finding],
+    opts: &CleanOptions,
+    progress: Option<&crate::snapshot::SnapshotProgress>,
+) -> CleanPlan {
     let mut items = Vec::new();
     let mut total_bytes: u64 = 0;
     let mut paths = HashSet::new();
@@ -144,7 +152,7 @@ pub fn plan(findings: &[Finding], opts: &CleanOptions) -> CleanPlan {
                     items.push(skip(finding, "duplicate path"));
                     continue;
                 }
-                let snapshot = match crate::snapshot::capture(&path) {
+                let snapshot = match crate::snapshot::capture_with_progress(&path, progress) {
                     Ok(snapshot) => snapshot,
                     Err(error) => {
                         items.push(skip(finding, &format!("cannot snapshot target: {error}")));
@@ -289,6 +297,15 @@ pub fn execute_with_progress(
     opts: &CleanOptions,
     progress: Option<std::sync::mpsc::SyncSender<CleanProgress>>,
 ) -> CleanReceipt {
+    execute_with_snapshot_progress(plan, opts, progress, None)
+}
+
+pub fn execute_with_snapshot_progress(
+    plan: &CleanPlan,
+    opts: &CleanOptions,
+    progress: Option<std::sync::mpsc::SyncSender<CleanProgress>>,
+    snapshot_progress: Option<&crate::snapshot::SnapshotProgress>,
+) -> CleanReceipt {
     let mut receipt = CleanReceipt {
         schema_version: SCHEMA_VERSION,
         dry_run: !opts.execute,
@@ -297,6 +314,7 @@ pub fn execute_with_progress(
         skipped: Vec::new(),
         errors: Vec::new(),
         space_changes: Vec::new(),
+        execution_timings: None,
     };
     let mut jobs: Vec<Job> = Vec::new();
     for item in &plan.items {
@@ -448,10 +466,14 @@ pub fn execute_with_progress(
         }
         let total = jobs.len();
         let done = std::sync::atomic::AtomicUsize::new(0);
+        let recheck_micros = std::sync::atomic::AtomicU64::new(0);
+        let deletion_micros = std::sync::atomic::AtomicU64::new(0);
         let run = |job: &Job| -> (Result<RemovedItem, String>, Vec<String>) {
             let mut warnings: Vec<String> = Vec::new();
+            let recheck_started = std::time::Instant::now();
             let valid = validate_ancestors(&job.path).and_then(|()| {
-                let now = crate::snapshot::capture(&job.path).map_err(|error| error.to_string())?;
+                let now = crate::snapshot::capture_with_progress(&job.path, snapshot_progress)
+                    .map_err(|error| error.to_string())?;
                 if now != job.snapshot {
                     return Err(
                         "contents or identity changed since preview; create and approve a new plan"
@@ -468,12 +490,20 @@ pub fn execute_with_progress(
                 }
                 Ok(())
             });
+            recheck_micros.fetch_add(
+                recheck_started
+                    .elapsed()
+                    .as_micros()
+                    .min(u128::from(u64::MAX)) as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
             if let Err(error) = valid {
                 return (
                     Err(format!("{} ({}): {error}", job.label, job.path.display())),
                     warnings,
                 );
             }
+            let deletion_started = std::time::Instant::now();
             let outcome: Result<u64, String> = if job.via == "trash" {
                 // Use the just-verified size; an extra sizing walk would widen
                 // the interval between the drift check and the OS move.
@@ -499,6 +529,13 @@ pub fn execute_with_progress(
                     .unwrap_or(job.bytes);
                 delete_path(&job.path, false, false).map(|()| len)
             };
+            deletion_micros.fetch_add(
+                deletion_started
+                    .elapsed()
+                    .as_micros()
+                    .min(u128::from(u64::MAX)) as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
             let ok = outcome.is_ok();
             let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             if let Some(tx) = &progress {
@@ -553,6 +590,14 @@ pub fn execute_with_progress(
                 }
             }
         }
+        receipt.execution_timings = Some(crate::model::ExecutionTimings {
+            recheck_worker_seconds: recheck_micros.load(std::sync::atomic::Ordering::Relaxed)
+                as f64
+                / 1_000_000.0,
+            deletion_worker_seconds: deletion_micros.load(std::sync::atomic::Ordering::Relaxed)
+                as f64
+                / 1_000_000.0,
+        });
         receipt.space_changes = before
             .into_iter()
             .map(|(volume_root, available_before)| {

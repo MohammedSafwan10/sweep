@@ -88,6 +88,9 @@ enum Command {
         /// Save a fingerprinted dry-run plan for later review (never overwrites).
         #[arg(long, conflicts_with_all = ["execute", "from_plan"])]
         save_plan: Option<PathBuf>,
+        /// Report cleanup stages and fingerprint progress to stderr (also with --json).
+        #[arg(long)]
+        progress: bool,
         /// Use a saved plan without discovering new cleanup targets.
         #[arg(long, conflicts_with_all = ["save_plan", "id", "roots", "no_docker"])]
         from_plan: Option<PathBuf>,
@@ -290,6 +293,7 @@ fn run() -> Result<i32> {
         Command::Clean {
             execute,
             save_plan,
+            progress,
             from_plan,
             yes,
             json,
@@ -311,7 +315,11 @@ fn run() -> Result<i32> {
                 include,
                 force_danger: force,
             };
+            let cleanup_started = std::time::Instant::now();
+            let mut discovery_seconds = 0.0;
+            let planning_started;
             let (plan, plan_id) = if let Some(path) = &from_plan {
+                planning_started = std::time::Instant::now();
                 let saved = sweep_core::saved_plan::SavedPlan::read(path)
                     .with_context(|| format!("cannot load reviewed plan {}", path.display()))?;
                 let ids: Vec<_> = saved
@@ -325,8 +333,16 @@ fn run() -> Result<i32> {
             } else {
                 validate_ids(&id)?;
                 let ctx = build_ctx(&roots, no_docker)?;
-                let findings = detectors::scan_selected(&ctx, &id);
-                let plan = cleaner::plan(&findings, &opts);
+                let discovery_started = std::time::Instant::now();
+                let findings = cleanup_stage("Discovering", progress || !json, |_| {
+                    detectors::scan_selected(&ctx, &id)
+                })?;
+                discovery_seconds = discovery_started.elapsed().as_secs_f64();
+                planning_started = std::time::Instant::now();
+                let plan =
+                    cleanup_stage("Fingerprinting preview", progress || !json, |counters| {
+                        cleaner::plan_with_snapshot_progress(&findings, &opts, Some(counters))
+                    })?;
                 if let Some(path) = &save_plan {
                     let saved = sweep_core::saved_plan::SavedPlan::new(plan)?;
                     saved
@@ -337,9 +353,27 @@ fn run() -> Result<i32> {
                     (plan, None)
                 }
             };
+            let planning_seconds = planning_started.elapsed().as_secs_f64();
             if json {
-                let receipt = cleaner::execute(&plan, &opts);
+                let execution_started = std::time::Instant::now();
+                let receipt = cleanup_stage(
+                    if execute {
+                        "Rechecking and cleaning"
+                    } else {
+                        "Preview"
+                    },
+                    progress,
+                    |counters| {
+                        cleaner::execute_with_snapshot_progress(&plan, &opts, None, Some(counters))
+                    },
+                )?;
                 let mut output = serde_json::to_value(&receipt)?;
+                output["timings"] = serde_json::json!({
+                    "discovery_seconds": discovery_seconds,
+                    "planning_seconds": planning_seconds,
+                    "execution_seconds": execution_started.elapsed().as_secs_f64(),
+                    "total_seconds": cleanup_started.elapsed().as_secs_f64(),
+                });
                 if let Some(id) = &plan_id {
                     output["plan_id"] = serde_json::json!(id);
                 }
@@ -377,8 +411,12 @@ fn run() -> Result<i32> {
                     );
                 }
             });
-            let receipt = cleaner::execute_with_progress(&plan, &opts, Some(tx));
-            let _ = printer.join();
+            let receipt = cleanup_stage("Rechecking and cleaning", true, |counters| {
+                cleaner::execute_with_snapshot_progress(&plan, &opts, Some(tx), Some(counters))
+            })?;
+            printer
+                .join()
+                .map_err(|_| anyhow::anyhow!("cleanup progress thread panicked"))?;
             print_receipt_human(&receipt, &opts);
             eprintln!("Elapsed: {:.1}s", started.elapsed().as_secs_f64());
             Ok(if receipt.errors.is_empty() { 0 } else { 2 })
@@ -390,6 +428,50 @@ fn run() -> Result<i32> {
             json,
         } => run_bin(&drive, execute, yes, json),
     }
+}
+
+/// Keep stdout exclusively for receipts; one update per second avoids per-file I/O.
+fn cleanup_stage<T>(
+    label: &str,
+    enabled: bool,
+    work: impl FnOnce(&sweep_core::snapshot::SnapshotProgress) -> T,
+) -> Result<T> {
+    let counters = sweep_core::snapshot::SnapshotProgress::default();
+    if !enabled {
+        return Ok(work(&counters));
+    }
+    let started = std::time::Instant::now();
+    eprintln!("{label}...");
+    std::thread::scope(|scope| -> Result<T> {
+        let (stop, rx) = std::sync::mpsc::channel::<()>();
+        let counter_ref = &counters;
+        let printer = std::thread::Builder::new()
+            .name("sweep-progress".into())
+            .spawn_scoped(scope, move || {
+                while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                    rx.recv_timeout(std::time::Duration::from_secs(1))
+                {
+                    let (files, bytes) = counter_ref.counts();
+                    eprintln!(
+                        "  {label}: {files} files checked, {} read, {:.1}s",
+                        format_bytes(bytes),
+                        started.elapsed().as_secs_f64()
+                    );
+                }
+            })?;
+        let result = work(&counters);
+        drop(stop);
+        printer
+            .join()
+            .map_err(|_| anyhow::anyhow!("cleanup progress thread panicked"))?;
+        let (files, bytes) = counters.counts();
+        eprintln!(
+            "  {label}: {files} files checked, {} read in {:.2}s",
+            format_bytes(bytes),
+            started.elapsed().as_secs_f64()
+        );
+        Ok(result)
+    })
 }
 
 fn parse_drive(value: &str) -> Result<char, String> {

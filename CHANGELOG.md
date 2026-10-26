@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.5.0 — 2026-10-26
+
+- Full-content fingerprints now use a shared pool of at most eight workers,
+  deterministic per-entry SHA-256 digests, streamed reads, and fewer metadata/
+  identity opens. Windows identity probes request metadata access rather than
+  content access. Files are checked through their read handles and reopened names;
+  directories are revalidated after the full content pass.
+- Cleanup prints stage/fingerprint progress for humans; `--progress` enables stderr
+  progress alongside JSON. Clean JSON adds stage timings and executed receipts add
+  separate recheck/deletion worker timings.
+- Saved-plan schema is now **2**. v0.4.0 plans must be recreated and reviewed; they
+  cannot silently execute with the new fingerprint format. Receipt schema stays 1.
+- Added deterministic-worker, progress, changed-file, and old-plan regressions,
+  plus a read-only profiling example and local performance methodology.
+
 ## v0.4.0 — 2026-10-23
 
 - `clean --save-plan FILE` writes a checksummed, fingerprinted preview without
