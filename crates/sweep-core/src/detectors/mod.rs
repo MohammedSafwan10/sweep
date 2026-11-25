@@ -84,7 +84,9 @@ impl Ctx {
                     home.join(".npm")
                 }
             });
-        let pnpm_store = local_app_data.join("pnpm").join("store");
+        let pnpm_store = var_path("npm_config_store_dir")
+            .or_else(|| var_path("PNPM_STORE_DIR"))
+            .unwrap_or_else(|| local_app_data.join("pnpm").join("store"));
         let yarn_cache = var_path("YARN_CACHE_FOLDER")
             .unwrap_or_else(|| local_app_data.join("Yarn").join("Cache"));
         let pip_cache = var_path("PIP_CACHE_DIR").unwrap_or_else(|| {

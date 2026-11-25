@@ -106,6 +106,8 @@ fn progress_uses_stderr_and_json_includes_stage_timings() {
             "--id",
             "cargo",
             "--no-docker",
+            "--save-plan",
+            "progress-plan.json",
             "--json",
             "--progress",
         ])

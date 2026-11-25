@@ -339,10 +339,16 @@ fn run() -> Result<i32> {
                 })?;
                 discovery_seconds = discovery_started.elapsed().as_secs_f64();
                 planning_started = std::time::Instant::now();
-                let plan =
+                let needs_snapshot = execute || save_plan.is_some();
+                let plan = if needs_snapshot {
                     cleanup_stage("Fingerprinting preview", progress || !json, |counters| {
                         cleaner::plan_with_snapshot_progress(&findings, &opts, Some(counters))
-                    })?;
+                    })?
+                } else {
+                    cleanup_stage("Planning preview", progress || !json, |_| {
+                        cleaner::plan_preview(&findings, &opts)
+                    })?
+                };
                 if let Some(path) = &save_plan {
                     let saved = sweep_core::saved_plan::SavedPlan::new(plan)?;
                     saved

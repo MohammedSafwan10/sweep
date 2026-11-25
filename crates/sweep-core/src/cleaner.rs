@@ -27,14 +27,30 @@ pub struct CleanPlan {
 }
 
 /// Build the plan: filter by safety level, refuse links and protected
-/// paths, drop vanished paths, total bytes.
+/// paths, drop vanished paths, total bytes, and capture fail-closed snapshots.
 pub fn plan(findings: &[Finding], opts: &CleanOptions) -> CleanPlan {
     plan_with_snapshot_progress(findings, opts, None)
+}
+
+/// Fast preview-only plan for interactive dry-runs (`!execute` and no `--save-plan`):
+/// runs all safety, symlink, ancestor, and nesting checks without hashing file contents.
+/// Produced items have `snapshot: None`, so `execute()` still fails closed if ever executed.
+pub fn plan_preview(findings: &[Finding], opts: &CleanOptions) -> CleanPlan {
+    plan_inner(findings, opts, false, None)
 }
 
 pub fn plan_with_snapshot_progress(
     findings: &[Finding],
     opts: &CleanOptions,
+    progress: Option<&crate::snapshot::SnapshotProgress>,
+) -> CleanPlan {
+    plan_inner(findings, opts, true, progress)
+}
+
+fn plan_inner(
+    findings: &[Finding],
+    opts: &CleanOptions,
+    capture_snapshots: bool,
     progress: Option<&crate::snapshot::SnapshotProgress>,
 ) -> CleanPlan {
     let mut items = Vec::new();
@@ -152,20 +168,26 @@ pub fn plan_with_snapshot_progress(
                     items.push(skip(finding, "duplicate path"));
                     continue;
                 }
-                let snapshot = match crate::snapshot::capture_with_progress(&path, progress) {
-                    Ok(snapshot) => snapshot,
-                    Err(error) => {
-                        items.push(skip(finding, &format!("cannot snapshot target: {error}")));
-                        continue;
+                let snapshot = if capture_snapshots {
+                    match crate::snapshot::capture_with_progress(&path, progress) {
+                        Ok(snapshot) => Some(snapshot),
+                        Err(error) => {
+                            items.push(skip(finding, &format!("cannot snapshot target: {error}")));
+                            continue;
+                        }
                     }
+                } else {
+                    None
                 };
                 let mut finding = finding.clone();
                 finding.action = CleanAction::RemovePath { path };
-                finding.bytes = snapshot.bytes;
+                if let Some(ref snap) = snapshot {
+                    finding.bytes = snap.bytes;
+                }
                 total_bytes = total_bytes.saturating_add(finding.bytes);
                 items.push(PlannedItem {
                     finding,
-                    snapshot: Some(snapshot),
+                    snapshot,
                     disposition: Disposition::Remove {
                         via: if opts.to_trash {
                             "trash".to_string()
